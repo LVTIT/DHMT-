@@ -1,22 +1,22 @@
 """
 capture.py - Video / Webcam / Image capture module.
 
-Provides VideoCapture for webcam and video files, and ImageCapture
-for static image files (.jpg, .png, etc.).
-Both support context manager and iterator protocol.
+Provides VideoCapture for webcam and video files, and ImageCapture for static
+image files. Both classes support context-manager and iterator protocols.
 """
 
 import os
+from typing import Optional, Tuple, Union
+
 import cv2
-from typing import Union, Optional, Tuple
 import numpy as np
 
-# Supported image extensions
+
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 
 
 def is_image(source) -> bool:
-    """Check if source path points to an image file."""
+    """Return True when source is a supported image file path."""
     if isinstance(source, int):
         return False
     _, ext = os.path.splitext(str(source))
@@ -25,15 +25,12 @@ def is_image(source) -> bool:
 
 class ImageCapture:
     """
-    Static image reader with the same interface as VideoCapture.
-
-    Reads a single image file and yields it once via the iterator protocol.
-    Useful for skeleton detection on still images.
+    Static image reader with the same basic interface as VideoCapture.
 
     Parameters
     ----------
     source : str
-        Path to an image file (.jpg, .png, etc.).
+        Path to an image file.
     """
 
     def __init__(self, source: str):
@@ -79,7 +76,7 @@ class ImageCapture:
         return 1 if self._frame is not None else 0
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Return the image (only once)."""
+        """Return the loaded image once."""
         if self._frame is not None and not self._consumed:
             self._consumed = True
             return True, self._frame.copy()
@@ -105,11 +102,11 @@ class VideoCapture:
     Parameters
     ----------
     source : int | str
-        Camera index (e.g. 0) hoặc đường dẫn file video.
+        Camera index, for example 0, or video file path.
     width : int, optional
-        Chiều rộng frame mong muốn (chỉ áp dụng cho webcam).
+        Requested webcam frame width.
     height : int, optional
-        Chiều cao frame mong muốn (chỉ áp dụng cho webcam).
+        Requested webcam frame height.
     """
 
     def __init__(
@@ -123,16 +120,12 @@ class VideoCapture:
         self._width = width
         self._height = height
 
-    # ------------------------------------------------------------------
-    # Context manager
-    # ------------------------------------------------------------------
     def open(self) -> "VideoCapture":
-        """Mở nguồn video và cấu hình resolution (nếu cần)."""
+        """Open the video source and configure webcam resolution if requested."""
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
-            raise IOError(f"Không thể mở nguồn video: {self._source}")
+            raise IOError(f"Cannot open video source: {self._source}")
 
-        # Chỉ set resolution khi nguồn là webcam (int)
         if isinstance(self._source, int):
             if self._width:
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
@@ -141,7 +134,7 @@ class VideoCapture:
         return self
 
     def close(self) -> None:
-        """Giải phóng tài nguyên capture."""
+        """Release the capture resource."""
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -152,24 +145,18 @@ class VideoCapture:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
     @property
     def is_opened(self) -> bool:
-        """Trả về True nếu nguồn video đang mở."""
         return self._cap is not None and self._cap.isOpened()
 
     @property
     def fps(self) -> float:
-        """FPS của nguồn video (0 nếu chưa mở)."""
         if self._cap is None:
             return 0.0
         return self._cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     @property
     def frame_size(self) -> Tuple[int, int]:
-        """(width, height) của frame hiện tại."""
         if self._cap is None:
             return (0, 0)
         w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -178,25 +165,12 @@ class VideoCapture:
 
     @property
     def frame_count(self) -> int:
-        """Tổng số frame (0 nếu là webcam)."""
         if self._cap is None:
             return 0
         return int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # ------------------------------------------------------------------
-    # Read
-    # ------------------------------------------------------------------
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """
-        Đọc một frame.
-
-        Returns
-        -------
-        success : bool
-            True nếu đọc thành công.
-        frame : np.ndarray | None
-            BGR frame hoặc None nếu hết / lỗi.
-        """
+        """Read one BGR frame."""
         if self._cap is None:
             return False, None
         ret, frame = self._cap.read()
@@ -204,11 +178,7 @@ class VideoCapture:
             return False, None
         return True, frame
 
-    # ------------------------------------------------------------------
-    # Iterator
-    # ------------------------------------------------------------------
     def __iter__(self):
-        """Cho phép dùng `for frame in capture: ...`"""
         if not self.is_opened:
             self.open()
         return self

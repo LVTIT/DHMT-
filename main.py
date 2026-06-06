@@ -17,15 +17,20 @@ Controls (video/webcam mode):
 """
 
 import argparse
-import sys
-import os
 import cv2
 import time
 import webbrowser
 
 from capture import VideoCapture, ImageCapture, is_image
+from data_exporter import MotionDataExporter
 from detector import PoseDetector
-from kinematics import compute_all_angles
+from kinematics import (
+    compute_all_angles,
+    compute_bone_lengths,
+    compute_fk_summary,
+    demo_ik_targets,
+)
+from motion_filter import LandmarkSmoother
 from visualizer_2d import Visualizer2D
 from bvh_exporter import BVHExporter
 
@@ -72,6 +77,22 @@ def parse_args():
         "--no-browser", action="store_true",
         help="Don't auto-open browser for 3D viewer"
     )
+    parser.add_argument(
+        "--no-smoothing", action="store_true",
+        help="Disable temporal smoothing for 3D landmarks"
+    )
+    parser.add_argument(
+        "--smooth-alpha", type=float, default=0.55,
+        help="EMA smoothing alpha in (0,1]; lower is smoother, default: 0.55"
+    )
+    parser.add_argument(
+        "--export-json", type=str, default=None,
+        help="Save frame-by-frame landmarks, angles, FK/IK data to JSON"
+    )
+    parser.add_argument(
+        "--export-csv", type=str, default=None,
+        help="Save frame-by-frame landmarks and angles to CSV"
+    )
     return parser.parse_args()
 
 
@@ -89,6 +110,20 @@ def _start_3d_server(args):
         return None
 
 
+def _compute_motion_features(detection):
+    """Compute kinematics data used by the 3D viewer and data exporters."""
+    angles = compute_all_angles(
+        detection["landmarks_3d"],
+        detection["visibility"],
+        vis_threshold=0.3,
+    )
+    return angles, {
+        "bone_lengths": compute_bone_lengths(detection["landmarks_3d"]),
+        "fk": compute_fk_summary(detection["landmarks_3d"]),
+        "ik_demo": demo_ik_targets(detection["landmarks_3d"]),
+    }
+
+
 def run_image_mode(args, source: str):
     """
     Process a single static image: detect skeleton, show overlay, wait for keypress.
@@ -103,6 +138,8 @@ def run_image_mode(args, source: str):
     cap = ImageCapture(source)
     detector = PoseDetector(**detector_kwargs)
     vis2d = Visualizer2D()
+    smoother = None if args.no_smoothing else LandmarkSmoother(alpha=args.smooth_alpha)
+    data_exporter = MotionDataExporter() if (args.export_json or args.export_csv) else None
 
     # Start 3D server if enabled
     pose_server = None
@@ -114,14 +151,12 @@ def run_image_mode(args, source: str):
 
     for frame in cap:
         detection = detector.detect(frame)
+        detection = smoother.apply(detection) if smoother is not None else detection
 
         angles = None
+        motion_features = {}
         if detection is not None:
-            angles = compute_all_angles(
-                detection["landmarks_3d"],
-                detection["visibility"],
-                vis_threshold=0.3,
-            )
+            angles, motion_features = _compute_motion_features(detection)
             _print(f"[INFO] Detected {len(detection['landmarks_2d'])} landmarks")
             if angles:
                 _print("[INFO] Joint angles:")
@@ -135,9 +170,12 @@ def run_image_mode(args, source: str):
 
         # Send to 3D viewer
         if pose_server and detection:
-            pose_server.send_pose(detection, angles)
+            pose_server.send_pose(detection, angles, motion_features)
             time.sleep(0.5)  # Give browser time to connect and render
-            pose_server.send_pose(detection, angles)  # Resend after connect
+            pose_server.send_pose(detection, angles, motion_features)  # Resend after connect
+
+        if data_exporter is not None:
+            data_exporter.add_frame(0, 0.0, detection, angles, motion_features)
 
         # Show result and wait
         cv2.imshow("Motion Capture - Image", frame)
@@ -149,6 +187,11 @@ def run_image_mode(args, source: str):
     detector.close()
     if pose_server:
         pose_server.stop()
+    if data_exporter is not None:
+        if args.export_json:
+            data_exporter.save_json(args.export_json)
+        if args.export_csv:
+            data_exporter.save_csv(args.export_csv)
     cv2.destroyAllWindows()
     _print("[EXIT] Done.")
 
@@ -167,6 +210,8 @@ def run_video_mode(args, source):
     detector = PoseDetector(**detector_kwargs)
     vis2d = Visualizer2D()
     bvh = BVHExporter(fps=30.0)
+    smoother = None if args.no_smoothing else LandmarkSmoother(alpha=args.smooth_alpha)
+    data_exporter = MotionDataExporter() if (args.export_json or args.export_csv) else None
 
     # Start 3D WebSocket server
     pose_server = None
@@ -182,26 +227,30 @@ def run_video_mode(args, source):
     # --- Main loop ---
     cap.open()
     _print(f"[INIT] Resolution: {cap.frame_size}, FPS: {cap.fps}")
+    _print(f"[INIT] Smoothing: {'off' if args.no_smoothing else f'EMA alpha={args.smooth_alpha}'}")
     _print("[INIT] Controls: Q=Quit, R=Toggle BVH recording")
     _print("=" * 50)
 
     try:
-        for frame in cap:
+        start_time = time.time()
+        for frame_index, frame in enumerate(cap):
             # 1. Detect pose
             detection = detector.detect(frame)
+            detection = smoother.apply(detection) if smoother is not None else detection
 
             # 2. Compute joint angles
             angles = None
+            motion_features = {}
             if detection is not None:
-                angles = compute_all_angles(
-                    detection["landmarks_3d"],
-                    detection["visibility"],
-                    vis_threshold=0.3,
-                )
+                angles, motion_features = _compute_motion_features(detection)
 
             # 3. Record BVH frame
             if bvh.is_recording and detection is not None:
                 bvh.add_frame(detection["landmarks_3d"])
+
+            if data_exporter is not None:
+                timestamp_ms = (time.time() - start_time) * 1000.0
+                data_exporter.add_frame(frame_index, timestamp_ms, detection, angles, motion_features)
 
             # 4. Draw 2D overlay
             vis2d.draw(frame, detection, angles)
@@ -220,7 +269,7 @@ def run_video_mode(args, source):
 
             # 5. Send to 3D viewer via WebSocket
             if pose_server is not None:
-                pose_server.send_pose(detection, angles)
+                pose_server.send_pose(detection, angles, motion_features)
 
             # 6. Handle keyboard
             key = cv2.waitKey(1) & 0xFF
@@ -258,6 +307,11 @@ def run_video_mode(args, source):
         detector.close()
         if pose_server is not None:
             pose_server.stop()
+        if data_exporter is not None:
+            if args.export_json:
+                data_exporter.save_json(args.export_json)
+            if args.export_csv:
+                data_exporter.save_csv(args.export_csv)
         cv2.destroyAllWindows()
         _print("[EXIT] Resources released. Goodbye!")
 

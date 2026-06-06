@@ -8,7 +8,7 @@ Provides functions to:
 """
 
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ======================================================================
 # Joint index constants (from MediaPipe Pose)
@@ -65,6 +65,15 @@ ANGLE_DEFINITIONS: List[Tuple[int, int, int, str]] = [
 # Map angle name -> vertex joint index (for 2D overlay positioning)
 ANGLE_JOINT_INDEX: Dict[str, int] = {
     defn[3]: defn[1] for defn in ANGLE_DEFINITIONS
+}
+
+# Skeleton chains used by FK/IK helpers.
+FK_CHAINS: Dict[str, List[int]] = {
+    "left_arm": [LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST],
+    "right_arm": [RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST],
+    "left_leg": [LEFT_HIP, LEFT_KNEE, LEFT_ANKLE],
+    "right_leg": [RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE],
+    "spine": [LEFT_HIP, LEFT_SHOULDER, NOSE],
 }
 
 
@@ -148,6 +157,164 @@ def compute_all_angles(
         angles[name] = angle_between(a, b, c)
 
     return angles
+
+
+def compute_bone_lengths(
+    landmarks_3d: List[Tuple[float, float, float]],
+) -> Dict[str, float]:
+    """Compute 3D bone lengths for every visible skeleton segment."""
+    pts = np.array(landmarks_3d, dtype=float)
+    lengths: Dict[str, float] = {}
+    for group_name, segments in build_skeleton_segments().items():
+        for idx1, idx2 in segments:
+            key = f"{group_name}_{idx1}_{idx2}"
+            lengths[key] = float(np.linalg.norm(pts[idx2] - pts[idx1]))
+    return lengths
+
+
+def compute_segment_directions(
+    landmarks_3d: List[Tuple[float, float, float]],
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Compute normalized direction vectors for every skeleton segment.
+
+    These vectors are a compact forward-kinematics representation: each child
+    joint can be reconstructed from its parent, the bone length, and direction.
+    """
+    pts = np.array(landmarks_3d, dtype=float)
+    directions: Dict[str, Tuple[float, float, float]] = {}
+    for group_name, segments in build_skeleton_segments().items():
+        for idx1, idx2 in segments:
+            vec = pts[idx2] - pts[idx1]
+            length = np.linalg.norm(vec)
+            if length < 1e-8:
+                unit = np.zeros(3)
+            else:
+                unit = vec / length
+            directions[f"{group_name}_{idx1}_{idx2}"] = tuple(map(float, unit))
+    return directions
+
+
+def compute_fk_summary(
+    landmarks_3d: List[Tuple[float, float, float]],
+) -> Dict[str, Dict]:
+    """
+    Build a readable FK summary for report/demo purposes.
+
+    Each chain stores the root joint, child joints, bone lengths, and segment
+    directions in MediaPipe world coordinates.
+    """
+    pts = np.array(landmarks_3d, dtype=float)
+    summary: Dict[str, Dict] = {}
+
+    for chain_name, chain in FK_CHAINS.items():
+        bones = []
+        for parent, child in zip(chain, chain[1:]):
+            vec = pts[child] - pts[parent]
+            length = float(np.linalg.norm(vec))
+            direction = np.zeros(3) if length < 1e-8 else vec / length
+            bones.append({
+                "parent": parent,
+                "child": child,
+                "length": length,
+                "direction": tuple(map(float, direction)),
+            })
+        summary[chain_name] = {
+            "root": chain[0],
+            "joints": chain,
+            "bones": bones,
+        }
+
+    return summary
+
+
+def solve_two_bone_ik(
+    root: Tuple[float, float, float],
+    mid: Tuple[float, float, float],
+    end: Tuple[float, float, float],
+    target: Tuple[float, float, float],
+    pole: Optional[Tuple[float, float, float]] = None,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+    """
+    Solve a simple two-bone IK chain while preserving original bone lengths.
+
+    The returned tuple is (new_root, new_mid, new_end). It is useful for a small
+    IK demonstration on arm or leg chains without changing the realtime detector.
+    """
+    root_v = np.array(root, dtype=float)
+    mid_v = np.array(mid, dtype=float)
+    end_v = np.array(end, dtype=float)
+    target_v = np.array(target, dtype=float)
+
+    len_a = np.linalg.norm(mid_v - root_v)
+    len_b = np.linalg.norm(end_v - mid_v)
+    if len_a < 1e-8 or len_b < 1e-8:
+        return tuple(root_v), tuple(mid_v), tuple(end_v)
+
+    to_target = target_v - root_v
+    distance = np.linalg.norm(to_target)
+    if distance < 1e-8:
+        direction = np.array([1.0, 0.0, 0.0])
+    else:
+        direction = to_target / distance
+
+    max_reach = len_a + len_b - 1e-8
+    min_reach = abs(len_a - len_b) + 1e-8
+    clamped_distance = float(np.clip(distance, min_reach, max_reach))
+
+    if pole is None:
+        pole_v = mid_v - root_v
+        pole_v = pole_v - np.dot(pole_v, direction) * direction
+        if np.linalg.norm(pole_v) < 1e-8:
+            pole_v = np.array([0.0, 1.0, 0.0])
+    else:
+        pole_v = np.array(pole, dtype=float) - root_v
+        pole_v = pole_v - np.dot(pole_v, direction) * direction
+
+    pole_len = np.linalg.norm(pole_v)
+    if pole_len < 1e-8:
+        pole_v = np.array([0.0, 1.0, 0.0])
+        pole_len = 1.0
+    pole_dir = pole_v / pole_len
+
+    along = (len_a * len_a - len_b * len_b + clamped_distance * clamped_distance) / (2.0 * clamped_distance)
+    height_sq = max(len_a * len_a - along * along, 0.0)
+    height = np.sqrt(height_sq)
+
+    new_mid = root_v + direction * along + pole_dir * height
+    new_end = root_v + direction * clamped_distance
+    return tuple(map(float, root_v)), tuple(map(float, new_mid)), tuple(map(float, new_end))
+
+
+def demo_ik_targets(
+    landmarks_3d: List[Tuple[float, float, float]],
+    offset: Tuple[float, float, float] = (0.12, 0.0, 0.0),
+) -> Dict[str, List[Tuple[float, float, float]]]:
+    """
+    Produce small IK demo chains by moving wrists/ankles by offset.
+
+    This keeps the realtime pipeline honest: detection remains MediaPipe-based,
+    while IK is shown as an additional kinematics feature.
+    """
+    pts = np.array(landmarks_3d, dtype=float)
+    offset_v = np.array(offset, dtype=float)
+    chains = {
+        "left_arm": (LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST),
+        "right_arm": (RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST),
+        "left_leg": (LEFT_HIP, LEFT_KNEE, LEFT_ANKLE),
+        "right_leg": (RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE),
+    }
+    solved: Dict[str, List[Tuple[float, float, float]]] = {}
+    for name, (root_idx, mid_idx, end_idx) in chains.items():
+        target = pts[end_idx] + offset_v
+        solved[name] = list(solve_two_bone_ik(
+            pts[root_idx],
+            pts[mid_idx],
+            pts[end_idx],
+            target,
+            pole=pts[mid_idx],
+        ))
+    return solved
 
 
 def build_skeleton_segments() -> Dict[str, List[Tuple[int, int]]]:

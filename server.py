@@ -12,7 +12,6 @@ and the browser client renders the 3D skeleton.
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from typing import Optional, Dict, List
 
@@ -160,6 +159,7 @@ class PoseServer:
         self,
         detection: Optional[Dict],
         angles: Optional[Dict[str, float]] = None,
+        metadata: Optional[Dict] = None,
     ) -> None:
         """
         Send pose data to all connected browser clients.
@@ -177,11 +177,13 @@ class PoseServer:
             return
 
         if detection is None:
-            data = {"landmarks": None, "angles": None}
+            data = {"landmarks": None, "angles": None, "metadata": metadata or {}}
         else:
             data = {
                 "landmarks": [list(pt) for pt in detection["landmarks_3d"]],
                 "angles": angles or {},
+                "visibility": detection.get("visibility", []),
+                "metadata": metadata or {},
             }
 
         # Schedule broadcast in the server's event loop
