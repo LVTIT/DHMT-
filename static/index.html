@@ -161,8 +161,8 @@
             border-right: 1px solid var(--line);
             padding-right: 8px;
         }
-        input[type="number"] {
-            width: 54px;
+        #camera-input {
+            width: 176px;
             height: 34px;
             border: 1px solid var(--line);
             border-radius: 6px;
@@ -193,18 +193,46 @@
             height: 18px;
             stroke-width: 2.2;
         }
+        #aspect-button {
+            width: 52px;
+            min-width: 52px;
+            padding: 0 8px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+            color: var(--text);
+        }
+        #aspect-button.active {
+            color: var(--teal);
+        }
         #video-overlay {
             position: absolute;
             left: 14px;
             top: 92px;
             z-index: 11;
-            width: min(360px, calc(100vw - 28px));
-            aspect-ratio: 4 / 3;
-            object-fit: cover;
+            width: min(520px, calc(100vw - 28px));
+            max-height: calc(100vh - 178px);
+            aspect-ratio: var(--video-aspect, 16 / 9);
+            object-fit: contain;
             border: 1px solid var(--line);
             border-radius: 8px;
             background: #08090a;
             box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+        }
+        #video-overlay.fit-cover {
+            object-fit: cover;
+        }
+        body.portrait-mode #video-overlay {
+            height: min(78vh, calc(100vh - 178px));
+            width: auto;
+            max-width: min(48vw, 520px);
+        }
+        body.landscape-mode #video-overlay {
+            width: min(28vw, 340px);
+            max-height: 192px;
+            height: auto;
         }
         .hidden { display: none !important; }
         #toast {
@@ -240,7 +268,14 @@
             #video-overlay {
                 top: 142px;
                 left: 10px;
-                width: min(270px, calc(100vw - 20px));
+                width: min(310px, calc(100vw - 20px));
+                max-height: 45vh;
+            }
+            body.portrait-mode #video-overlay,
+            body.landscape-mode #video-overlay {
+                width: min(310px, calc(100vw - 20px));
+                height: auto;
+                max-width: calc(100vw - 20px);
             }
             .toolbar {
                 left: 10px;
@@ -285,13 +320,17 @@
 
     <nav class="hud toolbar">
         <div class="source-box">
-            <input id="camera-input" type="number" min="0" value="0" title="Camera index">
-            <button id="source-button" title="Use webcam"><i data-lucide="webcam"></i></button>
+            <input id="camera-input" type="text" value="0" placeholder="0 or http://phone:8080/video" title="Camera index or IP camera URL">
+            <button id="scan-cameras-button" title="Scan cameras"><i data-lucide="search"></i></button>
+            <button id="source-button" title="Use source"><i data-lucide="webcam"></i></button>
             <button id="upload-button" title="Upload video"><i data-lucide="upload"></i></button>
             <input id="upload-input" class="hidden" type="file" accept="video/*">
         </div>
         <button id="pause-button" title="Pause or resume"><i data-lucide="pause"></i></button>
         <button class="active" data-toggle="video" title="2D overlay"><i data-lucide="picture-in-picture-2"></i></button>
+        <button id="aspect-button" title="Camera aspect">9:16</button>
+        <button id="fit-button" title="Fit or fill camera frame"><i data-lucide="scan"></i></button>
+        <button id="rotate-button" title="Rotate camera"><i data-lucide="rotate-cw"></i></button>
         <button class="active" data-toggle="skeleton" title="3D skeleton"><i data-lucide="git-branch"></i></button>
         <button class="active" data-toggle="humanoid" title="Humanoid mesh"><i data-lucide="person-standing"></i></button>
         <button data-toggle="ik" title="IK overlay"><i data-lucide="route"></i></button>
@@ -336,13 +375,25 @@
         function updateHud(payload) {
             renderer.update(payload);
             const gesture = payload.gesture || {};
+            const metadata = payload.metadata || {};
             document.getElementById('backend-fps').textContent =
-                payload.metadata?.fps ? payload.metadata.fps.toFixed(1) : '--';
+                metadata.fps ? metadata.fps.toFixed(1) : '--';
             document.getElementById('gesture-label').textContent = gesture.label || '--';
             document.getElementById('gesture-confidence').textContent =
                 Number.isFinite(gesture.confidence) ? gesture.confidence.toFixed(2) : '--';
+            updateVideoAspect(metadata);
             updateAngles(payload.angles || {});
             updateMetadata(payload);
+        }
+
+        function updateVideoAspect(metadata) {
+            const width = metadata.frame_width;
+            const height = metadata.frame_height;
+            if (!Number.isFinite(width) || !Number.isFinite(height) || height <= 0) return;
+            document.getElementById('video-overlay')
+                .style.setProperty('--video-aspect', `${width} / ${height}`);
+            document.body.classList.toggle('portrait-mode', width < height);
+            document.body.classList.toggle('landscape-mode', width >= height);
         }
 
         function updateAngles(angles) {
@@ -369,6 +420,12 @@
                 <div class="row"><span class="label">ik solver</span><span class="value">FABRIK</span></div>
                 <div class="row"><span class="label">left ik error</span><span class="value">${Number.isFinite(ikError) ? ikError.toFixed(4) : '--'}</span></div>
                 <div class="row"><span class="label">source</span><span class="value">${metadata.source || '--'}</span></div>
+                <div class="row"><span class="label">backend</span><span class="value">${metadata.source_backend || '--'}</span></div>
+                <div class="row"><span class="label">camera mode</span><span class="value">${metadata.camera_aspect || '--'} / ${metadata.camera_fit || '--'} / ${metadata.camera_rotate ?? '--'} deg</span></div>
+                <div class="row"><span class="label">latency mode</span><span class="value">${metadata.latency_mode || '--'}</span></div>
+                <div class="row"><span class="label">frame size</span><span class="value">${metadata.frame_width || '--'} x ${metadata.frame_height || '--'}</span></div>
+                <div class="row"><span class="label">frame mean</span><span class="value">${Number.isFinite(metadata.frame_mean) ? metadata.frame_mean.toFixed(1) : '--'}</span></div>
+                <div class="row"><span class="label">frame std</span><span class="value">${Number.isFinite(metadata.frame_std) ? metadata.frame_std.toFixed(1) : '--'}</span></div>
             `;
         }
 
