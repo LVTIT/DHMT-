@@ -3,205 +3,304 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Human Motion Capture - WebGL Viewer</title>
+    <title>Human Motion Capture</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+
         * { box-sizing: border-box; }
+        :root {
+            --bg: #111315;
+            --panel: rgba(20, 22, 24, 0.82);
+            --line: rgba(255, 255, 255, 0.13);
+            --text: #f3efe4;
+            --muted: #a4aaa2;
+            --teal: #50d2c2;
+            --coral: #ff8068;
+            --amber: #f4bd4f;
+            --green: #8bd45f;
+        }
         body {
             margin: 0;
             overflow: hidden;
-            background: #101114;
-            color: #f2f2ee;
-            font-family: Inter, Segoe UI, Arial, sans-serif;
+            background: radial-gradient(circle at 30% 10%, #202629 0, #111315 46%, #0b0d0f 100%);
+            color: var(--text);
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: 0;
         }
         #canvas-container {
-            position: relative;
             width: 100vw;
             height: 100vh;
         }
         .hud {
             position: absolute;
-            z-index: 10;
+            z-index: 12;
+            color: var(--text);
+            backdrop-filter: blur(14px);
+        }
+        .topbar {
+            top: 14px;
+            left: 14px;
+            right: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
             pointer-events: none;
         }
-        #top-left {
-            top: 16px;
-            left: 16px;
+        .brand {
+            min-width: 220px;
         }
         h1 {
-            margin: 0 0 8px;
+            margin: 0;
             font-size: 18px;
-            letter-spacing: 0;
-            color: #ffffff;
+            line-height: 1;
+            font-weight: 700;
         }
-        .status-row {
+        .status {
             display: flex;
             align-items: center;
             gap: 8px;
+            margin-top: 8px;
+            color: var(--muted);
             font-size: 12px;
-            color: #c6c6be;
         }
         #status-dot {
             width: 9px;
             height: 9px;
             border-radius: 50%;
-            background: #e05252;
-            box-shadow: 0 0 12px rgba(224, 82, 82, 0.7);
+            background: var(--coral);
+            box-shadow: 0 0 16px rgba(255, 128, 104, 0.75);
         }
         #status-dot.connected {
-            background: #43d17d;
-            box-shadow: 0 0 12px rgba(67, 209, 125, 0.7);
+            background: var(--green);
+            box-shadow: 0 0 16px rgba(139, 212, 95, 0.75);
         }
         #status-dot.connecting {
-            background: #f5c542;
-            box-shadow: 0 0 12px rgba(245, 197, 66, 0.65);
+            background: var(--amber);
+            box-shadow: 0 0 16px rgba(244, 189, 79, 0.75);
         }
-        #stats {
-            margin-top: 10px;
+        .stats {
             display: grid;
-            grid-template-columns: repeat(3, minmax(58px, auto));
+            grid-template-columns: repeat(4, minmax(74px, auto));
             gap: 8px;
-            font-size: 11px;
+            padding: 10px;
+            border: 1px solid var(--line);
+            background: var(--panel);
+            border-radius: 8px;
+            pointer-events: auto;
         }
         .stat {
-            border-left: 2px solid #35b7bf;
+            min-width: 72px;
+            border-left: 2px solid var(--teal);
             padding-left: 8px;
         }
         .stat span {
             display: block;
-            color: #868982;
-            margin-bottom: 2px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.2;
         }
         .stat strong {
+            display: block;
+            margin-top: 2px;
+            font-family: "IBM Plex Mono", monospace;
             font-size: 13px;
-            font-weight: 700;
+            color: var(--text);
         }
-        #controls {
-            position: absolute;
-            left: 16px;
-            bottom: 16px;
-            z-index: 10;
-            display: flex;
-            gap: 8px;
-            pointer-events: auto;
-        }
-        button {
-            width: 38px;
-            height: 34px;
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            border-radius: 6px;
-            background: rgba(23, 24, 28, 0.78);
-            color: #f2f2ee;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 700;
-            backdrop-filter: blur(10px);
-        }
-        button:hover, button.active {
-            border-color: #35b7bf;
-            color: #7ee6df;
-            background: rgba(33, 37, 41, 0.9);
-        }
-        #angles-panel {
-            position: absolute;
-            top: 16px;
-            right: 16px;
-            z-index: 10;
-            width: min(280px, calc(100vw - 32px));
-            max-height: calc(100vh - 32px);
+        #inspector {
+            top: 92px;
+            right: 14px;
+            width: min(320px, calc(100vw - 28px));
+            max-height: calc(100vh - 178px);
             overflow: auto;
-            padding: 14px;
+            padding: 12px;
+            border: 1px solid var(--line);
             border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(20, 21, 24, 0.82);
-            backdrop-filter: blur(12px);
+            background: var(--panel);
         }
-        #angles-panel.hidden {
-            display: none;
-        }
-        h2 {
-            margin: 0 0 10px;
+        #inspector h2 {
+            margin: 0 0 8px;
             font-size: 12px;
-            letter-spacing: 0;
-            color: #f5c542;
+            color: var(--amber);
+            font-weight: 700;
         }
-        .angle-row, .meta-row {
+        .row {
             display: flex;
             justify-content: space-between;
             gap: 12px;
             padding: 5px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
             font-size: 12px;
         }
-        .angle-row:last-child, .meta-row:last-child {
-            border-bottom: 0;
-        }
+        .row:last-child { border-bottom: 0; }
         .label {
-            color: #aaa99f;
+            color: var(--muted);
             text-transform: capitalize;
         }
         .value {
-            color: #7ee6df;
-            font-variant-numeric: tabular-nums;
-            font-weight: 700;
+            font-family: "IBM Plex Mono", monospace;
+            color: var(--teal);
+            text-align: right;
         }
-        @media (max-width: 700px) {
-            #angles-panel {
+        .toolbar {
+            left: 14px;
+            bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            pointer-events: auto;
+        }
+        .source-box {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-right: 1px solid var(--line);
+            padding-right: 8px;
+        }
+        input[type="number"] {
+            width: 54px;
+            height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            font-family: "IBM Plex Mono", monospace;
+            padding: 0 8px;
+        }
+        button {
+            display: grid;
+            place-items: center;
+            width: 36px;
+            height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            cursor: pointer;
+        }
+        button:hover,
+        button.active {
+            border-color: var(--teal);
+            color: var(--teal);
+            background: rgba(80, 210, 194, 0.1);
+        }
+        button svg {
+            width: 18px;
+            height: 18px;
+            stroke-width: 2.2;
+        }
+        #video-overlay {
+            position: absolute;
+            left: 14px;
+            top: 92px;
+            z-index: 11;
+            width: min(360px, calc(100vw - 28px));
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #08090a;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+        }
+        .hidden { display: none !important; }
+        #toast {
+            position: absolute;
+            z-index: 20;
+            left: 50%;
+            bottom: 72px;
+            transform: translateX(-50%);
+            padding: 8px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 160ms ease;
+            pointer-events: none;
+        }
+        #toast.show { opacity: 1; }
+        @media (max-width: 820px) {
+            .topbar {
+                align-items: flex-start;
+            }
+            .stats {
+                grid-template-columns: repeat(2, minmax(72px, 1fr));
+            }
+            #inspector {
                 top: auto;
                 right: 10px;
-                bottom: 58px;
-                width: calc(100vw - 20px);
-                max-height: 38vh;
+                bottom: 66px;
+                max-height: 34vh;
             }
-            #top-left {
-                top: 10px;
+            #video-overlay {
+                top: 142px;
                 left: 10px;
+                width: min(270px, calc(100vw - 20px));
             }
-            #controls {
+            .toolbar {
                 left: 10px;
-                bottom: 10px;
-            }
-            #stats {
-                grid-template-columns: repeat(3, 1fr);
+                right: 10px;
+                overflow-x: auto;
             }
         }
     </style>
 </head>
 <body>
-    <div id="canvas-container">
-        <div id="top-left" class="hud">
+    <main id="canvas-container"></main>
+
+    <section class="hud topbar">
+        <div class="brand">
             <h1>Human Motion Capture</h1>
-            <div class="status-row">
+            <div class="status">
                 <span id="status-dot"></span>
                 <span id="status-text">Disconnected</span>
             </div>
-            <div id="stats">
-                <div class="stat"><span>FPS</span><strong id="fps-counter">--</strong></div>
-                <div class="stat"><span>Landmarks</span><strong id="landmark-count">0</strong></div>
-                <div class="stat"><span>Clients</span><strong id="stream-state">idle</strong></div>
-            </div>
         </div>
+        <div class="stats">
+            <div class="stat"><span>Stream FPS</span><strong id="stream-fps">--</strong></div>
+            <div class="stat"><span>Backend FPS</span><strong id="backend-fps">--</strong></div>
+            <div class="stat"><span>Gesture</span><strong id="gesture-label">--</strong></div>
+            <div class="stat"><span>Confidence</span><strong id="gesture-confidence">--</strong></div>
+        </div>
+    </section>
 
-        <div id="angles-panel">
-            <h2>Joint Angles</h2>
-            <div id="angles-list">
-                <div class="angle-row"><span class="label">Waiting</span><span class="value">--</span></div>
-            </div>
-            <h2 style="margin-top:14px;">Kinematics</h2>
-            <div id="meta-list">
-                <div class="meta-row"><span class="label">FK chains</span><span class="value">0</span></div>
-                <div class="meta-row"><span class="label">IK demo</span><span class="value">off</span></div>
-            </div>
-        </div>
+    <img id="video-overlay" src="/video_feed" alt="OpenCV skeleton overlay">
 
-        <div id="controls">
-            <button id="toggle-grid" class="active" title="Grid">#</button>
-            <button id="toggle-angles" class="active" title="Angles panel">A</button>
-            <button id="toggle-center" class="active" title="Auto center">C</button>
-            <button id="toggle-ik" title="IK demo overlay">IK</button>
-            <button id="reset-camera" title="Reset camera">R</button>
+    <aside id="inspector" class="hud">
+        <h2>Joint Angles</h2>
+        <div id="angles-list">
+            <div class="row"><span class="label">waiting</span><span class="value">--</span></div>
         </div>
-    </div>
+        <h2 style="margin-top: 14px;">Kinematics</h2>
+        <div id="metadata-list">
+            <div class="row"><span class="label">fk chains</span><span class="value">0</span></div>
+            <div class="row"><span class="label">ik solver</span><span class="value">FABRIK</span></div>
+        </div>
+    </aside>
+
+    <nav class="hud toolbar">
+        <div class="source-box">
+            <input id="camera-input" type="number" min="0" value="0" title="Camera index">
+            <button id="source-button" title="Use webcam"><i data-lucide="webcam"></i></button>
+            <button id="upload-button" title="Upload video"><i data-lucide="upload"></i></button>
+            <input id="upload-input" class="hidden" type="file" accept="video/*">
+        </div>
+        <button id="pause-button" title="Pause or resume"><i data-lucide="pause"></i></button>
+        <button class="active" data-toggle="video" title="2D overlay"><i data-lucide="picture-in-picture-2"></i></button>
+        <button class="active" data-toggle="skeleton" title="3D skeleton"><i data-lucide="git-branch"></i></button>
+        <button class="active" data-toggle="humanoid" title="Humanoid mesh"><i data-lucide="person-standing"></i></button>
+        <button data-toggle="ik" title="IK overlay"><i data-lucide="route"></i></button>
+        <button class="active" data-toggle="grid" title="Grid"><i data-lucide="grid-3x3"></i></button>
+        <button class="active" data-toggle="center" title="Hip center"><i data-lucide="crosshair"></i></button>
+        <button id="reset-camera" title="Reset camera"><i data-lucide="rotate-ccw"></i></button>
+    </nav>
+
+    <div id="toast"></div>
 
     <script type="importmap">
     {
@@ -211,341 +310,81 @@
         }
     }
     </script>
-
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
     <script type="module">
-    import * as THREE from 'three';
-    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { SkeletonRenderer } from '/static/skeleton_renderer.js';
+        import { PoseWebSocket } from '/static/websocket_client.js';
+        import { initControls } from '/static/controls.js';
 
-    const container = document.getElementById('canvas-container');
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x101114);
-    scene.fog = new THREE.FogExp2(0x101114, 0.18);
+        const renderer = new SkeletonRenderer(document.getElementById('canvas-container'));
+        const toast = document.getElementById('toast');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
 
-    const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.01, 100);
-    camera.position.set(0.25, 0.45, 2.65);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
-    container.appendChild(renderer.domElement);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
-    controls.target.set(0, 0.15, 0);
-    controls.minDistance = 0.65;
-    controls.maxDistance = 8;
-
-    scene.add(new THREE.HemisphereLight(0xf6f2df, 0x282c32, 2.1));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.35);
-    keyLight.position.set(2.5, 4, 3);
-    keyLight.castShadow = true;
-    scene.add(keyLight);
-    const sideLight = new THREE.PointLight(0xff6b57, 0.9, 6);
-    sideLight.position.set(-2, 0.8, 1.2);
-    scene.add(sideLight);
-
-    const ground = new THREE.Mesh(
-        new THREE.PlaneGeometry(7, 7),
-        new THREE.MeshStandardMaterial({ color: 0x16181b, roughness: 0.88 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -1.05;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    const grid = new THREE.GridHelper(7, 28, 0x35b7bf, 0x34383d);
-    grid.position.y = -1.045;
-    scene.add(grid);
-
-    const SEGMENT_GROUPS = {
-        torso:     { pairs: [[11,12],[11,23],[12,24],[23,24]], color: 0xe8e1ca },
-        left_arm:  { pairs: [[11,13],[13,15]],                 color: 0x35b7bf },
-        right_arm: { pairs: [[12,14],[14,16]],                 color: 0x35b7bf },
-        left_leg:  { pairs: [[23,25],[25,27],[27,29],[27,31]], color: 0xff6b57 },
-        right_leg: { pairs: [[24,26],[26,28],[28,30],[28,32]], color: 0xff6b57 },
-        face:      { pairs: [[0,11],[0,12]],                   color: 0x8e9288 },
-    };
-    const KEY_JOINTS = [0,11,12,13,14,15,16,23,24,25,26,27,28,29,30,31,32];
-    const SCALE = 1.65;
-
-    const skeletonRoot = new THREE.Group();
-    scene.add(skeletonRoot);
-    const jointGroup = new THREE.Group();
-    const boneGroup = new THREE.Group();
-    const ikGroup = new THREE.Group();
-    skeletonRoot.add(jointGroup, boneGroup, ikGroup);
-
-    const jointMeshes = [];
-    const jointGeo = new THREE.SphereGeometry(0.022, 18, 18);
-    const jointMat = new THREE.MeshStandardMaterial({
-        color: 0xf5c542,
-        emissive: 0x46340b,
-        roughness: 0.35,
-        metalness: 0.05,
-    });
-    for (const idx of KEY_JOINTS) {
-        const mesh = new THREE.Mesh(jointGeo, jointMat);
-        mesh.visible = false;
-        mesh.castShadow = true;
-        mesh.userData.index = idx;
-        jointGroup.add(mesh);
-        jointMeshes.push(mesh);
-    }
-
-    const boneCylinders = [];
-    const cylGeo = new THREE.CylinderGeometry(0.008, 0.008, 1, 10);
-    cylGeo.translate(0, 0.5, 0);
-    for (const group of Object.values(SEGMENT_GROUPS)) {
-        for (const [i1, i2] of group.pairs) {
-            const mat = new THREE.MeshStandardMaterial({
-                color: group.color,
-                emissive: new THREE.Color(group.color).multiplyScalar(0.12),
-                roughness: 0.38,
-            });
-            const cyl = new THREE.Mesh(cylGeo.clone(), mat);
-            cyl.visible = false;
-            cyl.castShadow = true;
-            cyl.userData = { i1, i2 };
-            boneGroup.add(cyl);
-            boneCylinders.push(cyl);
-        }
-    }
-
-    const ikLines = [];
-    const ikMat = new THREE.LineBasicMaterial({ color: 0xf5c542, linewidth: 2 });
-    for (let i = 0; i < 4; i++) {
-        const geom = new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()
-        ]);
-        const line = new THREE.Line(geom, ikMat);
-        line.visible = false;
-        ikGroup.add(line);
-        ikLines.push(line);
-    }
-
-    const _v1 = new THREE.Vector3();
-    const _v2 = new THREE.Vector3();
-    const _dir = new THREE.Vector3();
-    const _up = new THREE.Vector3(0, 1, 0);
-    const _quat = new THREE.Quaternion();
-
-    let autoCenter = true;
-    let showIk = false;
-
-    function transformLandmarks(landmarks) {
-        let center = [0, 0, 0];
-        if (autoCenter && landmarks.length > 24) {
-            center = [
-                (landmarks[23][0] + landmarks[24][0]) / 2,
-                (landmarks[23][1] + landmarks[24][1]) / 2,
-                (landmarks[23][2] + landmarks[24][2]) / 2,
-            ];
-        }
-        return landmarks.map(lm => new THREE.Vector3(
-            (lm[0] - center[0]) * SCALE,
-            -(lm[1] - center[1]) * SCALE,
-            -(lm[2] - center[2]) * SCALE
-        ));
-    }
-
-    function setSkeletonVisible(visible) {
-        jointMeshes.forEach(m => m.visible = visible && m.userData.wasVisible);
-        boneCylinders.forEach(m => m.visible = visible && m.userData.wasVisible);
-        ikLines.forEach(m => m.visible = visible && showIk);
-    }
-
-    function updateSkeleton(data) {
-        if (!data.landmarks) {
-            document.getElementById('landmark-count').textContent = '0';
-            document.getElementById('stream-state').textContent = 'lost';
-            jointMeshes.forEach(m => { m.userData.wasVisible = false; m.visible = false; });
-            boneCylinders.forEach(m => { m.userData.wasVisible = false; m.visible = false; });
-            ikLines.forEach(line => line.visible = false);
-            return;
+        function showToast(text) {
+            toast.textContent = text;
+            toast.classList.add('show');
+            clearTimeout(showToast.timer);
+            showToast.timer = setTimeout(() => toast.classList.remove('show'), 1600);
         }
 
-        const lms = transformLandmarks(data.landmarks);
-        const visibility = data.visibility || [];
-        document.getElementById('landmark-count').textContent = String(data.landmarks.length);
-        document.getElementById('stream-state').textContent = 'live';
-
-        for (const mesh of jointMeshes) {
-            const idx = mesh.userData.index;
-            const ok = idx < lms.length && (visibility.length === 0 || visibility[idx] >= 0.25);
-            mesh.userData.wasVisible = ok;
-            mesh.visible = ok;
-            if (ok) mesh.position.copy(lms[idx]);
+        function setStatus({ state, text }) {
+            statusDot.className = state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : '';
+            statusText.textContent = text;
         }
 
-        for (const cyl of boneCylinders) {
-            const { i1, i2 } = cyl.userData;
-            const ok = i1 < lms.length && i2 < lms.length &&
-                (visibility.length === 0 || (visibility[i1] >= 0.25 && visibility[i2] >= 0.25));
-            cyl.userData.wasVisible = ok;
-            if (!ok) {
-                cyl.visible = false;
-                continue;
+        function updateHud(payload) {
+            renderer.update(payload);
+            const gesture = payload.gesture || {};
+            document.getElementById('backend-fps').textContent =
+                payload.metadata?.fps ? payload.metadata.fps.toFixed(1) : '--';
+            document.getElementById('gesture-label').textContent = gesture.label || '--';
+            document.getElementById('gesture-confidence').textContent =
+                Number.isFinite(gesture.confidence) ? gesture.confidence.toFixed(2) : '--';
+            updateAngles(payload.angles || {});
+            updateMetadata(payload);
+        }
+
+        function updateAngles(angles) {
+            const list = document.getElementById('angles-list');
+            const keys = Object.keys(angles).sort();
+            if (!keys.length) {
+                list.innerHTML = '<div class="row"><span class="label">no angles</span><span class="value">--</span></div>';
+                return;
             }
-            _v1.copy(lms[i1]);
-            _v2.copy(lms[i2]);
-            _dir.subVectors(_v2, _v1);
-            const len = _dir.length();
-            if (len > 0.001) {
-                cyl.position.copy(_v1);
-                cyl.scale.set(1, len, 1);
-                _dir.normalize();
-                _quat.setFromUnitVectors(_up, _dir);
-                cyl.quaternion.copy(_quat);
-                cyl.visible = true;
-            } else {
-                cyl.visible = false;
-            }
+            list.innerHTML = keys.map((key) => {
+                const label = key.replaceAll('_', ' ').toLowerCase();
+                return `<div class="row"><span class="label">${label}</span><span class="value">${angles[key].toFixed(1)} deg</span></div>`;
+            }).join('');
         }
 
-        updateIk(data.metadata?.ik_demo || {});
-        updateAnglesPanel(data.angles);
-        updateMetadataPanel(data.metadata || {});
-    }
-
-    function updateIk(ikDemo) {
-        const chains = Object.values(ikDemo);
-        for (let i = 0; i < ikLines.length; i++) {
-            const chain = chains[i];
-            if (!showIk || !chain) {
-                ikLines[i].visible = false;
-                continue;
-            }
-            const points = transformLandmarks(chain);
-            ikLines[i].geometry.setFromPoints(points);
-            ikLines[i].visible = true;
+        function updateMetadata(payload) {
+            const metadata = payload.metadata || {};
+            const fkCount = metadata.fk ? Object.keys(metadata.fk).length : 0;
+            const boneCount = metadata.bone_lengths ? Object.keys(metadata.bone_lengths).length : 0;
+            const ikError = metadata.ik_demo?.left_arm?.end_error;
+            document.getElementById('metadata-list').innerHTML = `
+                <div class="row"><span class="label">fk chains</span><span class="value">${fkCount}</span></div>
+                <div class="row"><span class="label">bones</span><span class="value">${boneCount}</span></div>
+                <div class="row"><span class="label">ik solver</span><span class="value">FABRIK</span></div>
+                <div class="row"><span class="label">left ik error</span><span class="value">${Number.isFinite(ikError) ? ikError.toFixed(4) : '--'}</span></div>
+                <div class="row"><span class="label">source</span><span class="value">${metadata.source || '--'}</span></div>
+            `;
         }
-    }
 
-    function updateAnglesPanel(angles) {
-        const list = document.getElementById('angles-list');
-        if (!angles || Object.keys(angles).length === 0) {
-            list.innerHTML = '<div class="angle-row"><span class="label">No angles</span><span class="value">--</span></div>';
-            return;
-        }
-        list.innerHTML = Object.keys(angles).sort().map(key => {
-            const label = key.replace(/_/g, ' ').toLowerCase();
-            return `<div class="angle-row"><span class="label">${label}</span><span class="value">${angles[key].toFixed(1)} deg</span></div>`;
-        }).join('');
-    }
-
-    function updateMetadataPanel(metadata) {
-        const fkCount = metadata.fk ? Object.keys(metadata.fk).length : 0;
-        const boneCount = metadata.bone_lengths ? Object.keys(metadata.bone_lengths).length : 0;
-        document.getElementById('meta-list').innerHTML = `
-            <div class="meta-row"><span class="label">FK chains</span><span class="value">${fkCount}</span></div>
-            <div class="meta-row"><span class="label">Bones</span><span class="value">${boneCount}</span></div>
-            <div class="meta-row"><span class="label">IK demo</span><span class="value">${showIk ? 'on' : 'off'}</span></div>
-        `;
-    }
-
-    const WS_URL = `ws://${window.location.host}/ws`;
-    let ws = null;
-    let reconnectTimer = null;
-    let pingTimer = null;
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
-
-    function setStatus(state, text) {
-        const dot = document.getElementById('status-dot');
-        dot.className = state;
-        document.getElementById('status-text').textContent = text;
-    }
-
-    function connectWebSocket() {
-        setStatus('connecting', 'Connecting');
-        try {
-            ws = new WebSocket(WS_URL);
-        } catch (e) {
-            scheduleReconnect();
-            return;
-        }
-        ws.onopen = () => {
-            setStatus('connected', 'Connected');
-            frameCount = 0;
-            lastFpsTime = performance.now();
-            clearInterval(pingTimer);
-            pingTimer = setInterval(() => {
-                if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
-            }, 1500);
-            if (reconnectTimer) clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        };
-        ws.onmessage = (event) => {
-            try {
-                updateSkeleton(JSON.parse(event.data));
-                frameCount++;
-                const now = performance.now();
-                if (now - lastFpsTime >= 1000) {
-                    document.getElementById('fps-counter').textContent =
-                        String(Math.round(frameCount * 1000 / (now - lastFpsTime)));
-                    frameCount = 0;
-                    lastFpsTime = now;
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        };
-        ws.onclose = () => {
-            clearInterval(pingTimer);
-            setStatus('', 'Disconnected');
-            document.getElementById('fps-counter').textContent = '--';
-            scheduleReconnect();
-        };
-        ws.onerror = () => ws.close();
-    }
-
-    function scheduleReconnect() {
-        if (reconnectTimer) return;
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWebSocket();
-        }, 1600);
-    }
-
-    function toggleButton(id, onChange) {
-        const button = document.getElementById(id);
-        button.addEventListener('click', () => {
-            button.classList.toggle('active');
-            onChange(button.classList.contains('active'));
+        const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/pose`;
+        const client = new PoseWebSocket({
+            url: wsUrl,
+            onStatus: setStatus,
+            onMessage: updateHud,
+            onFps: (fps) => {
+                document.getElementById('stream-fps').textContent = String(fps);
+            },
         });
-    }
-    toggleButton('toggle-grid', active => { grid.visible = active; });
-    toggleButton('toggle-angles', active => {
-        document.getElementById('angles-panel').classList.toggle('hidden', !active);
-    });
-    toggleButton('toggle-center', active => { autoCenter = active; });
-    toggleButton('toggle-ik', active => { showIk = active; updateMetadataPanel({}); });
-    document.getElementById('reset-camera').addEventListener('click', () => {
-        camera.position.set(0.25, 0.45, 2.65);
-        controls.target.set(0, 0.15, 0);
-        controls.update();
-    });
 
-    function animate() {
-        requestAnimationFrame(animate);
-        skeletonRoot.rotation.y += 0.0015;
-        controls.update();
-        renderer.render(scene, camera);
-    }
-
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    animate();
-    connectWebSocket();
+        initControls(renderer, { onControl: showToast });
+        window.lucide?.createIcons();
+        client.connect();
     </script>
 </body>
 </html>

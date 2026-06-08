@@ -8,7 +8,7 @@ Provides functions to:
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 # ======================================================================
 # Joint index constants (from MediaPipe Pose)
@@ -286,35 +286,144 @@ def solve_two_bone_ik(
     return tuple(map(float, root_v)), tuple(map(float, new_mid)), tuple(map(float, new_end))
 
 
+def fabrik_ik(
+    chain_points: Sequence[Tuple[float, float, float]],
+    target: Tuple[float, float, float],
+    tolerance: float = 1e-3,
+    max_iterations: int = 20,
+) -> List[Tuple[float, float, float]]:
+    """
+    Solve an IK chain with the FABRIK algorithm.
+
+    FABRIK alternates backward and forward passes over joint positions. It does
+    not require explicit rotation matrices, which makes it a good fit for a
+    webcam demo where we receive noisy joint positions every frame.
+    """
+    pts = np.asarray(chain_points, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] != 3:
+        return [tuple(map(float, row)) for row in pts.reshape((-1, 3))]
+
+    target_v = np.asarray(target, dtype=float)
+    root = pts[0].copy()
+    lengths = np.linalg.norm(pts[1:] - pts[:-1], axis=1)
+    total_length = float(np.sum(lengths))
+    if total_length < 1e-8 or np.any(lengths < 1e-8):
+        return [tuple(map(float, row)) for row in pts]
+
+    if np.linalg.norm(target_v - root) > total_length:
+        # Target is unreachable: stretch each segment toward the target.
+        for idx, length in enumerate(lengths):
+            direction = target_v - pts[idx]
+            norm = np.linalg.norm(direction)
+            if norm < 1e-8:
+                direction = np.array([1.0, 0.0, 0.0])
+            else:
+                direction = direction / norm
+            pts[idx + 1] = pts[idx] + direction * length
+        return [tuple(map(float, row)) for row in pts]
+
+    for _ in range(max(1, max_iterations)):
+        pts[-1] = target_v
+
+        # Backward reaching: end effector fixed at target.
+        for idx in range(len(pts) - 2, -1, -1):
+            direction = pts[idx] - pts[idx + 1]
+            norm = np.linalg.norm(direction)
+            if norm < 1e-8:
+                continue
+            pts[idx] = pts[idx + 1] + (direction / norm) * lengths[idx]
+
+        pts[0] = root
+
+        # Forward reaching: root fixed at the original shoulder/hip.
+        for idx in range(len(pts) - 1):
+            direction = pts[idx + 1] - pts[idx]
+            norm = np.linalg.norm(direction)
+            if norm < 1e-8:
+                continue
+            pts[idx + 1] = pts[idx] + (direction / norm) * lengths[idx]
+
+        if np.linalg.norm(pts[-1] - target_v) <= tolerance:
+            break
+
+    return [tuple(map(float, row)) for row in pts]
+
+
+def solve_arm_ik_fabrik(
+    landmarks_3d: Sequence[Tuple[float, float, float]],
+    side: str,
+    target: Optional[Tuple[float, float, float]] = None,
+    offset: Tuple[float, float, float] = (0.12, 0.0, 0.0),
+    tolerance: float = 1e-3,
+    max_iterations: int = 20,
+) -> Dict:
+    """
+    Solve left or right arm IK with FABRIK.
+
+    Parameters
+    ----------
+    landmarks_3d:
+        MediaPipe world landmarks.
+    side:
+        "left" or "right".
+    target:
+        Desired wrist position. If omitted, the current wrist is moved by
+        offset to create a visual demo target.
+    """
+    side_key = side.lower()
+    if side_key not in {"left", "right"}:
+        raise ValueError("side must be 'left' or 'right'")
+
+    if side_key == "left":
+        indices = [LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST]
+    else:
+        indices = [RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST]
+
+    pts = np.asarray(landmarks_3d, dtype=float)
+    chain = [tuple(map(float, pts[idx])) for idx in indices]
+    target_v = np.asarray(target if target is not None else pts[indices[-1]] + np.asarray(offset), dtype=float)
+    solved = fabrik_ik(chain, tuple(map(float, target_v)), tolerance=tolerance, max_iterations=max_iterations)
+
+    shoulder_angle = angle_between(
+        np.asarray(solved[1], dtype=float),
+        np.asarray(solved[0], dtype=float),
+        pts[LEFT_HIP if side_key == "left" else RIGHT_HIP],
+    )
+    elbow_angle = angle_between(
+        np.asarray(solved[0], dtype=float),
+        np.asarray(solved[1], dtype=float),
+        np.asarray(solved[2], dtype=float),
+    )
+
+    return {
+        "side": side_key,
+        "indices": indices,
+        "target": tuple(map(float, target_v)),
+        "solved": solved,
+        "angles": {
+            "shoulder": float(shoulder_angle),
+            "elbow": float(elbow_angle),
+        },
+        "end_error": float(np.linalg.norm(np.asarray(solved[-1]) - target_v)),
+    }
+
+
 def demo_ik_targets(
     landmarks_3d: List[Tuple[float, float, float]],
     offset: Tuple[float, float, float] = (0.12, 0.0, 0.0),
-) -> Dict[str, List[Tuple[float, float, float]]]:
+) -> Dict[str, Dict]:
     """
-    Produce small IK demo chains by moving wrists/ankles by offset.
+    Produce small FABRIK IK demo chains by moving each wrist by offset.
 
     This keeps the realtime pipeline honest: detection remains MediaPipe-based,
-    while IK is shown as an additional kinematics feature.
+    while IK is shown as an additional kinematics feature on the browser.
     """
-    pts = np.array(landmarks_3d, dtype=float)
-    offset_v = np.array(offset, dtype=float)
-    chains = {
-        "left_arm": (LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST),
-        "right_arm": (RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST),
-        "left_leg": (LEFT_HIP, LEFT_KNEE, LEFT_ANKLE),
-        "right_leg": (RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE),
+    left = solve_arm_ik_fabrik(landmarks_3d, "left", offset=offset)
+    right = solve_arm_ik_fabrik(landmarks_3d, "right", offset=(-offset[0], offset[1], offset[2]))
+    return {
+        "left_arm": left,
+        "right_arm": right,
     }
-    solved: Dict[str, List[Tuple[float, float, float]]] = {}
-    for name, (root_idx, mid_idx, end_idx) in chains.items():
-        target = pts[end_idx] + offset_v
-        solved[name] = list(solve_two_bone_ik(
-            pts[root_idx],
-            pts[mid_idx],
-            pts[end_idx],
-            target,
-            pole=pts[mid_idx],
-        ))
-    return solved
 
 
 def build_skeleton_segments() -> Dict[str, List[Tuple[int, int]]]:

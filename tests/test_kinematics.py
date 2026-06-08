@@ -7,8 +7,10 @@ from kinematics import (
     angle_between,
     compute_all_angles,
     compute_bone_lengths,
+    fabrik_ik,
     solve_two_bone_ik,
 )
+from gesture_classifier import GestureClassifier
 from motion_filter import LandmarkSmoother
 
 
@@ -53,6 +55,68 @@ class KinematicsTest(unittest.TestCase):
         len_b = math.dist(new_mid, new_end)
         self.assertAlmostEqual(len_a, 1.0, places=5)
         self.assertAlmostEqual(len_b, 1.0, places=5)
+
+    def test_fabrik_reaches_target_and_preserves_lengths(self):
+        chain = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+        target = (1.0, 1.0, 0.0)
+
+        solved = fabrik_ik(chain, target, tolerance=1e-5, max_iterations=30)
+
+        self.assertLess(math.dist(solved[-1], target), 1e-3)
+        self.assertAlmostEqual(math.dist(solved[0], solved[1]), 1.0, places=5)
+        self.assertAlmostEqual(math.dist(solved[1], solved[2]), 1.0, places=5)
+
+
+class GestureClassifierTest(unittest.TestCase):
+    def _standing_detection(self):
+        landmarks_2d = [(0.0, 0.0)] * 33
+        landmarks_3d = [(0.0, 0.0, 0.0)] * 33
+        visibility = [1.0] * 33
+
+        landmarks_2d[0] = (320, 60)
+        landmarks_2d[11] = (270, 140)
+        landmarks_2d[12] = (370, 140)
+        landmarks_2d[13] = (245, 205)
+        landmarks_2d[14] = (395, 205)
+        landmarks_2d[15] = (235, 260)
+        landmarks_2d[16] = (405, 260)
+        landmarks_2d[23] = (285, 285)
+        landmarks_2d[24] = (355, 285)
+        landmarks_2d[25] = (285, 405)
+        landmarks_2d[26] = (355, 405)
+        landmarks_2d[27] = (285, 520)
+        landmarks_2d[28] = (355, 520)
+
+        landmarks_3d[0] = (0.0, -1.55, 0.0)
+        landmarks_3d[11] = (-0.25, -1.0, 0.0)
+        landmarks_3d[12] = (0.25, -1.0, 0.0)
+        landmarks_3d[13] = (-0.45, -0.55, 0.0)
+        landmarks_3d[14] = (0.45, -0.55, 0.0)
+        landmarks_3d[15] = (-0.48, -0.15, 0.0)
+        landmarks_3d[16] = (0.48, -0.15, 0.0)
+        landmarks_3d[23] = (-0.18, 0.0, 0.0)
+        landmarks_3d[24] = (0.18, 0.0, 0.0)
+        landmarks_3d[25] = (-0.18, 0.75, 0.0)
+        landmarks_3d[26] = (0.18, 0.75, 0.0)
+        landmarks_3d[27] = (-0.18, 1.45, 0.0)
+        landmarks_3d[28] = (0.18, 1.45, 0.0)
+
+        return {
+            "landmarks_2d": landmarks_2d,
+            "landmarks_3d": landmarks_3d,
+            "visibility": visibility,
+        }
+
+    def test_classifier_detects_left_hand_up(self):
+        detection = self._standing_detection()
+        detection["landmarks_2d"][15] = (235, 78)
+        result = GestureClassifier().classify(detection)
+        self.assertEqual(result.label, "LEFT_HAND_UP")
+        self.assertGreater(result.confidence, 0.5)
+
+    def test_classifier_detects_standing(self):
+        result = GestureClassifier().classify(self._standing_detection())
+        self.assertEqual(result.label, "STANDING")
 
 
 class MotionFilterTest(unittest.TestCase):

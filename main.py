@@ -1,337 +1,513 @@
 """
-main.py - Human Motion Capture pipeline.
+main.py - FastAPI backend for Human Motion Capture.
 
-Integrates all modules: capture, detection, kinematics, 2D visualization,
-Three.js 3D visualization (via WebSocket), and BVH export.
+Run:
+    uvicorn main:app --reload
 
-Usage:
-    python main.py --source 0              # webcam (default)
-    python main.py --source video.mp4      # video file
-    python main.py --source image.jpg      # static image
-    python main.py --source 0 --record output.bvh   # webcam + BVH recording
-    python main.py --source 0 --no-3d      # disable 3D WebSocket server
-
-Controls (video/webcam mode):
-    Q - Quit
-    R - Toggle BVH recording (start/stop)
+The backend reads webcam/video frames, extracts MediaPipe Pose landmarks,
+draws a 2D OpenCV overlay, classifies gestures, logs predictions to CSV, and
+streams compact 3D joint data to the browser through WebSocket /ws/pose.
 """
 
-import argparse
-import cv2
+from __future__ import annotations
+
+import asyncio
+import csv
+import json
+import threading
 import time
-import webbrowser
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
-from capture import VideoCapture, ImageCapture, is_image
-from data_exporter import MotionDataExporter
-from detector import PoseDetector
-from kinematics import (
-    compute_all_angles,
-    compute_bone_lengths,
-    compute_fk_summary,
-    demo_ik_targets,
-)
+import cv2
+import numpy as np
+import uvicorn
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from gesture_classifier import GestureClassifier, GestureResult
+from kinematics import compute_all_angles, compute_bone_lengths, compute_fk_summary, demo_ik_targets
 from motion_filter import LandmarkSmoother
+from pose_extractor import PoseExtractor
+from utils import encode_jpeg_bytes, landmarks_delta, parse_source
 from visualizer_2d import Visualizer2D
-from bvh_exporter import BVHExporter
 
 
-def _print(msg: str) -> None:
-    """Print with flush for Windows compatibility."""
-    print(msg, flush=True)
+ROOT_DIR = Path(__file__).resolve().parent
+STATIC_DIR = ROOT_DIR / "static"
+UPLOAD_DIR = ROOT_DIR / "uploads"
+LOG_DIR = ROOT_DIR / "logs"
 
 
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Human Motion Capture - Realtime skeleton detection & BVH export"
-    )
-    parser.add_argument(
-        "--source", type=str, default="0",
-        help="Video source: camera index (0,1,...), video file, or image file (.jpg/.png)"
-    )
-    parser.add_argument(
-        "--record", type=str, default=None,
-        help="BVH output file path (auto-start recording)"
-    )
-    parser.add_argument(
-        "--no-3d", action="store_true",
-        help="Disable 3D WebSocket server"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8765,
-        help="WebSocket server port (default: 8765)"
-    )
-    parser.add_argument(
-        "--model", type=str, default=None,
-        help="Path to pose_landmarker .task model file"
-    )
-    parser.add_argument(
-        "--width", type=int, default=None,
-        help="Camera resolution width"
-    )
-    parser.add_argument(
-        "--height", type=int, default=None,
-        help="Camera resolution height"
-    )
-    parser.add_argument(
-        "--no-browser", action="store_true",
-        help="Don't auto-open browser for 3D viewer"
-    )
-    parser.add_argument(
-        "--no-smoothing", action="store_true",
-        help="Disable temporal smoothing for 3D landmarks"
-    )
-    parser.add_argument(
-        "--smooth-alpha", type=float, default=0.55,
-        help="EMA smoothing alpha in (0,1]; lower is smoother, default: 0.55"
-    )
-    parser.add_argument(
-        "--export-json", type=str, default=None,
-        help="Save frame-by-frame landmarks, angles, FK/IK data to JSON"
-    )
-    parser.add_argument(
-        "--export-csv", type=str, default=None,
-        help="Save frame-by-frame landmarks and angles to CSV"
-    )
-    return parser.parse_args()
+class PauseRequest(BaseModel):
+    """Pause/resume request body."""
+
+    paused: bool
 
 
-def _start_3d_server(args):
-    """Start the 3D WebSocket server and optionally open browser."""
-    try:
-        from server import PoseServer
-        pose_server = PoseServer(port=args.port)
-        pose_server.start()
-        if not args.no_browser:
-            webbrowser.open(f"http://localhost:{args.port}")
-        return pose_server
-    except Exception as e:
-        _print(f"[WARN] Could not start 3D server: {e}")
-        return None
+class SourceRequest(BaseModel):
+    """Switch source request body."""
+
+    source: str = "0"
 
 
-def _compute_motion_features(detection):
-    """Compute kinematics data used by the 3D viewer and data exporters."""
-    angles = compute_all_angles(
-        detection["landmarks_3d"],
-        detection["visibility"],
-        vis_threshold=0.3,
-    )
-    return angles, {
-        "bone_lengths": compute_bone_lengths(detection["landmarks_3d"]),
-        "fk": compute_fk_summary(detection["landmarks_3d"]),
-        "ik_demo": demo_ik_targets(detection["landmarks_3d"]),
-    }
+class WebSocketManager:
+    """Manage connected browser clients and broadcast JSON pose payloads."""
+
+    def __init__(self) -> None:
+        self._clients: List[WebSocket] = []
+        self._lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self._lock:
+            self._clients.append(websocket)
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            if websocket in self._clients:
+                self._clients.remove(websocket)
+
+    async def broadcast(self, payload: Dict) -> None:
+        async with self._lock:
+            clients = list(self._clients)
+        disconnected = []
+        for websocket in clients:
+            try:
+                await websocket.send_text(json.dumps(payload))
+            except Exception:
+                disconnected.append(websocket)
+        for websocket in disconnected:
+            await self.disconnect(websocket)
+
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
 
 
-def run_image_mode(args, source: str):
-    """
-    Process a single static image: detect skeleton, show overlay, wait for keypress.
-    """
-    _print(f"[INIT] Image mode: {source}")
+class GestureCSVLogger:
+    """Append recognized pose labels to logs/gesture_log.csv."""
 
-    # Use IMAGE running mode (no tracking)
-    detector_kwargs = {"running_mode": "IMAGE"}
-    if args.model:
-        detector_kwargs["model_path"] = args.model
+    def __init__(self, path: Path, min_interval_s: float = 0.45) -> None:
+        self.path = path
+        self.min_interval_s = min_interval_s
+        self._lock = threading.Lock()
+        self._last_label: Optional[str] = None
+        self._last_write = 0.0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            with self.path.open("w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(["timestamp", "detected_pose", "confidence"])
 
-    cap = ImageCapture(source)
-    detector = PoseDetector(**detector_kwargs)
-    vis2d = Visualizer2D()
-    smoother = None if args.no_smoothing else LandmarkSmoother(alpha=args.smooth_alpha)
-    data_exporter = MotionDataExporter() if (args.export_json or args.export_csv) else None
+    def log(self, result: GestureResult) -> None:
+        """Write label changes and periodic updates to CSV."""
+        now = time.time()
+        if result.label == self._last_label and now - self._last_write < self.min_interval_s:
+            return
+        with self._lock:
+            with self.path.open("a", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow([
+                    datetime.now().isoformat(timespec="milliseconds"),
+                    result.label,
+                    f"{result.confidence:.4f}",
+                ])
+        self._last_label = result.label
+        self._last_write = now
 
-    # Start 3D server if enabled
-    pose_server = None
-    if not args.no_3d:
-        pose_server = _start_3d_server(args)
 
-    cap.open()
-    _print(f"[INIT] Image size: {cap.frame_size}")
+class PoseRuntime:
+    """Background capture and pose-processing loop used by the FastAPI app."""
 
-    for frame in cap:
-        detection = detector.detect(frame)
-        detection = smoother.apply(detection) if smoother is not None else detection
+    def __init__(
+        self,
+        manager: WebSocketManager,
+        source: Union[int, str] = 0,
+        model_path: Optional[str] = None,
+        delta_threshold: float = 0.012,
+    ) -> None:
+        self.manager = manager
+        self.model_path = model_path
+        self.delta_threshold = delta_threshold
 
-        angles = None
-        motion_features = {}
-        if detection is not None:
-            angles, motion_features = _compute_motion_features(detection)
-            _print(f"[INFO] Detected {len(detection['landmarks_2d'])} landmarks")
-            if angles:
-                _print("[INFO] Joint angles:")
-                for name, deg in sorted(angles.items()):
-                    _print(f"  {name:20s}: {deg:.1f} deg")
+        self._source: Union[int, str] = source
+        self._source_revision = 0
+        self._source_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._paused = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+
+        self._latest_payload = self._empty_payload("Starting camera")
+        self._latest_jpeg = self._placeholder_jpeg("Starting camera")
+        self._last_sent_landmarks = None
+        self._last_sent_label: Optional[str] = None
+        self._last_sent_detected: Optional[bool] = None
+        self._last_sent_at = 0.0
+
+        self._logger = GestureCSVLogger(LOG_DIR / "gesture_log.csv")
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Start the processing thread."""
+        self._loop = loop
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="pose-runtime", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the processing thread."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+
+    def set_paused(self, paused: bool) -> Dict:
+        """Pause or resume frame processing."""
+        with self._state_lock:
+            self._paused = paused
+            self._latest_payload["metadata"]["paused"] = paused
+        self._broadcast_latest()
+        return self.state()
+
+    def set_source(self, source: Union[int, str]) -> Dict:
+        """Request the worker thread to switch video source."""
+        parsed = parse_source(source)
+        with self._source_lock:
+            self._source = parsed
+            self._source_revision += 1
+        with self._state_lock:
+            self._latest_payload = self._empty_payload(f"Switching source to {parsed}")
+            self._latest_jpeg = self._placeholder_jpeg(f"Switching source to {parsed}")
+        self._broadcast_latest()
+        return self.state()
+
+    def state(self) -> Dict:
+        """Return current backend state for UI controls."""
+        with self._source_lock:
+            source = self._source
+        with self._state_lock:
+            payload = dict(self._latest_payload)
+            paused = self._paused
+        return {
+            "source": str(source),
+            "paused": paused,
+            "client_count": self.manager.client_count,
+            "latest": payload,
+            "log_path": str((LOG_DIR / "gesture_log.csv").relative_to(ROOT_DIR)),
+        }
+
+    def latest_payload(self) -> Dict:
+        with self._state_lock:
+            return dict(self._latest_payload)
+
+    def latest_jpeg(self) -> bytes:
+        with self._state_lock:
+            return bytes(self._latest_jpeg)
+
+    def _run(self) -> None:
+        """Worker loop: read frames, process pose, broadcast changed skeletons."""
+        extractor: Optional[PoseExtractor] = None
+        cap: Optional[cv2.VideoCapture] = None
+        current_revision = -1
+        classifier = GestureClassifier()
+        visualizer = Visualizer2D()
+        smoother = LandmarkSmoother(alpha=0.55)
+
+        try:
+            extractor = PoseExtractor(model_path=self.model_path)
+            while not self._stop_event.is_set():
+                with self._source_lock:
+                    requested_source = self._source
+                    requested_revision = self._source_revision
+
+                if cap is None or requested_revision != current_revision:
+                    if cap is not None:
+                        cap.release()
+                    cap = cv2.VideoCapture(requested_source)
+                    current_revision = requested_revision
+                    smoother.reset()
+                    if not cap.isOpened():
+                        message = f"Cannot open source: {requested_source}"
+                        self._publish_no_person(message)
+                        time.sleep(1.0)
+                        cap = None
+                        continue
+
+                if self._is_paused():
+                    time.sleep(0.05)
+                    continue
+
+                ok, frame = cap.read()
+                if not ok:
+                    if isinstance(requested_source, str):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        time.sleep(0.03)
+                        continue
+                    cap.release()
+                    cap = None
+                    time.sleep(0.25)
+                    continue
+
+                started = time.perf_counter()
+                pose_frame = extractor.extract(frame)
+                detection = pose_frame.to_detection()
+                detection = smoother.apply(detection) if detection is not None else None
+
+                angles: Dict[str, float] = {}
+                metadata: Dict = {}
+                if detection is not None:
+                    angles = compute_all_angles(detection["landmarks_3d"], detection["visibility"], vis_threshold=0.3)
+                    metadata = {
+                        "bone_lengths": compute_bone_lengths(detection["landmarks_3d"]),
+                        "fk": compute_fk_summary(detection["landmarks_3d"]),
+                        "ik_demo": demo_ik_targets(detection["landmarks_3d"]),
+                    }
+
+                gesture = classifier.classify(detection, angles)
+                elapsed = max(time.perf_counter() - started, 1e-6)
+                fps = 1.0 / elapsed
+                metadata.update({
+                    "fps": fps,
+                    "source": str(requested_source),
+                    "paused": False,
+                    "client_count": self.manager.client_count,
+                })
+
+                overlay = frame.copy()
+                visualizer.draw(overlay, detection, angles, gesture=gesture, vis_threshold=0.35)
+                jpeg = encode_jpeg_bytes(overlay)
+
+                payload = self._build_payload(detection, angles, gesture, metadata)
+                self._logger.log(gesture)
+                self._set_latest(payload, jpeg)
+                if self._should_broadcast(payload):
+                    self._broadcast(payload)
+
+                # Keep CPU usage tame while still feeling realtime.
+                time.sleep(max(0.0, (1.0 / 30.0) - (time.perf_counter() - started)))
+        except Exception as exc:
+            self._publish_no_person(f"Runtime error: {exc}")
+        finally:
+            if cap is not None:
+                cap.release()
+            if extractor is not None:
+                extractor.close()
+
+    def _is_paused(self) -> bool:
+        with self._state_lock:
+            return self._paused
+
+    def _set_latest(self, payload: Dict, jpeg: bytes) -> None:
+        with self._state_lock:
+            self._latest_payload = payload
+            if jpeg:
+                self._latest_jpeg = jpeg
+
+    def _build_payload(
+        self,
+        detection: Optional[Dict],
+        angles: Dict[str, float],
+        gesture: GestureResult,
+        metadata: Dict,
+    ) -> Dict:
+        if detection is None:
+            return {
+                "detected": False,
+                "landmarks": None,
+                "joints": [],
+                "visibility": [],
+                "angles": {},
+                "gesture": gesture.to_dict(),
+                "metadata": metadata,
+                "message": "No person detected",
+                "timestamp_ms": time.time() * 1000.0,
+            }
+        return {
+            "detected": True,
+            "landmarks": [list(map(float, point)) for point in detection["landmarks_3d"]],
+            "joints": detection.get("joints", []),
+            "visibility": [float(value) for value in detection["visibility"]],
+            "angles": {name: float(value) for name, value in angles.items()},
+            "gesture": gesture.to_dict(),
+            "metadata": metadata,
+            "message": "OK",
+            "timestamp_ms": time.time() * 1000.0,
+        }
+
+    def _should_broadcast(self, payload: Dict) -> bool:
+        now = time.perf_counter()
+        label = payload.get("gesture", {}).get("label")
+        detected = bool(payload.get("detected"))
+        if now - self._last_sent_at > 1.0:
+            changed = True
+        elif detected != self._last_sent_detected or label != self._last_sent_label:
+            changed = True
+        elif detected:
+            changed = landmarks_delta(
+                payload.get("landmarks"),
+                self._last_sent_landmarks,
+                payload.get("visibility"),
+            ) >= self.delta_threshold
         else:
-            _print("[WARN] No person detected in image")
+            changed = False
 
-        # Draw 2D overlay
-        vis2d.draw(frame, detection, angles)
+        if not changed:
+            return False
 
-        # Send to 3D viewer
-        if pose_server and detection:
-            pose_server.send_pose(detection, angles, motion_features)
-            time.sleep(0.5)  # Give browser time to connect and render
-            pose_server.send_pose(detection, angles, motion_features)  # Resend after connect
+        self._last_sent_at = now
+        self._last_sent_label = label
+        self._last_sent_detected = detected
+        self._last_sent_landmarks = payload.get("landmarks")
+        return True
 
-        if data_exporter is not None:
-            data_exporter.add_frame(0, 0.0, detection, angles, motion_features)
+    def _broadcast_latest(self) -> None:
+        self._broadcast(self.latest_payload())
 
-        # Show result and wait
-        cv2.imshow("Motion Capture - Image", frame)
-        _print("[INFO] Press any key to close.")
-        cv2.waitKey(0)
+    def _broadcast(self, payload: Dict) -> None:
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.manager.broadcast(payload), self._loop)
 
-    # Cleanup
-    cap.close()
-    detector.close()
-    if pose_server:
-        pose_server.stop()
-    if data_exporter is not None:
-        if args.export_json:
-            data_exporter.save_json(args.export_json)
-        if args.export_csv:
-            data_exporter.save_csv(args.export_csv)
-    cv2.destroyAllWindows()
-    _print("[EXIT] Done.")
+    def _publish_no_person(self, message: str) -> None:
+        gesture = GestureResult("NO_PERSON", 0.0, {"reason": 0.0})
+        with self._source_lock:
+            source = self._source
+        payload = self._empty_payload(message)
+        payload["metadata"]["source"] = str(source)
+        self._logger.log(gesture)
+        self._set_latest(payload, self._placeholder_jpeg(message))
+        self._broadcast(payload)
+
+    def _empty_payload(self, message: str) -> Dict:
+        return {
+            "detected": False,
+            "landmarks": None,
+            "joints": [],
+            "visibility": [],
+            "angles": {},
+            "gesture": GestureResult("NO_PERSON", 0.0, {"reason": 0.0}).to_dict(),
+            "metadata": {
+                "fps": 0.0,
+                "source": str(self._source),
+                "paused": self._paused,
+                "client_count": self.manager.client_count,
+            },
+            "message": message,
+            "timestamp_ms": time.time() * 1000.0,
+        }
+
+    @staticmethod
+    def _placeholder_jpeg(message: str) -> bytes:
+        frame = np.zeros((480, 720, 3), dtype=np.uint8)
+        frame[:] = (18, 19, 22)
+        cv2.putText(frame, "Human Motion Capture", (36, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (240, 240, 230), 2)
+        cv2.putText(frame, message[:56], (36, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (80, 220, 210), 2)
+        cv2.putText(frame, "No person detected", (36, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (80, 110, 255), 2)
+        return encode_jpeg_bytes(frame)
 
 
-def run_video_mode(args, source):
-    """
-    Process webcam or video file: real-time detection with all features.
-    """
-    _print(f"[INIT] Video mode, source: {source}")
+manager = WebSocketManager()
+runtime = PoseRuntime(manager)
 
-    detector_kwargs = {}
-    if args.model:
-        detector_kwargs["model_path"] = args.model
 
-    cap = VideoCapture(source, width=args.width, height=args.height)
-    detector = PoseDetector(**detector_kwargs)
-    vis2d = Visualizer2D()
-    bvh = BVHExporter(fps=30.0)
-    smoother = None if args.no_smoothing else LandmarkSmoother(alpha=args.smooth_alpha)
-    data_exporter = MotionDataExporter() if (args.export_json or args.export_csv) else None
-
-    # Start 3D WebSocket server
-    pose_server = None
-    if not args.no_3d:
-        pose_server = _start_3d_server(args)
-
-    # Auto-start recording if --record is specified
-    bvh_path = args.record
-    if bvh_path:
-        bvh.start_recording()
-        _print(f"[REC] Recording started -> {bvh_path}")
-
-    # --- Main loop ---
-    cap.open()
-    _print(f"[INIT] Resolution: {cap.frame_size}, FPS: {cap.fps}")
-    _print(f"[INIT] Smoothing: {'off' if args.no_smoothing else f'EMA alpha={args.smooth_alpha}'}")
-    _print("[INIT] Controls: Q=Quit, R=Toggle BVH recording")
-    _print("=" * 50)
-
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    runtime.start(asyncio.get_running_loop())
     try:
-        start_time = time.time()
-        for frame_index, frame in enumerate(cap):
-            # 1. Detect pose
-            detection = detector.detect(frame)
-            detection = smoother.apply(detection) if smoother is not None else detection
-
-            # 2. Compute joint angles
-            angles = None
-            motion_features = {}
-            if detection is not None:
-                angles, motion_features = _compute_motion_features(detection)
-
-            # 3. Record BVH frame
-            if bvh.is_recording and detection is not None:
-                bvh.add_frame(detection["landmarks_3d"])
-
-            if data_exporter is not None:
-                timestamp_ms = (time.time() - start_time) * 1000.0
-                data_exporter.add_frame(frame_index, timestamp_ms, detection, angles, motion_features)
-
-            # 4. Draw 2D overlay
-            vis2d.draw(frame, detection, angles)
-
-            # Draw recording indicator
-            if bvh.is_recording:
-                h, w = frame.shape[:2]
-                cv2.circle(frame, (w - 30, 30), 10, (0, 0, 255), -1)
-                cv2.putText(
-                    frame, f"REC [{bvh.frame_count}]",
-                    (w - 140, 37), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 0, 255), 2,
-                )
-
-            cv2.imshow("Motion Capture - 2D", frame)
-
-            # 5. Send to 3D viewer via WebSocket
-            if pose_server is not None:
-                pose_server.send_pose(detection, angles, motion_features)
-
-            # 6. Handle keyboard
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                _print("\n[EXIT] Quit requested.")
-                break
-            elif key == ord("r"):
-                if bvh.is_recording:
-                    bvh.stop_recording()
-                    if bvh_path:
-                        bvh.save(bvh_path)
-                    else:
-                        fname = f"mocap_{int(time.time())}.bvh"
-                        bvh.save(fname)
-                        bvh_path = None
-                    _print(f"[REC] Recording stopped. {bvh.frame_count} frames saved.")
-                else:
-                    if bvh_path is None:
-                        bvh_path = f"mocap_{int(time.time())}.bvh"
-                    bvh.start_recording()
-                    _print(f"[REC] Recording started -> {bvh_path}")
-
-    except KeyboardInterrupt:
-        _print("\n[EXIT] Interrupted.")
-
+        yield
     finally:
-        # Save any unsaved recording
-        if bvh.is_recording and bvh.frame_count > 0:
-            bvh.stop_recording()
-            save_path = bvh_path or f"mocap_{int(time.time())}.bvh"
-            bvh.save(save_path)
-
-        # Cleanup
-        cap.close()
-        detector.close()
-        if pose_server is not None:
-            pose_server.stop()
-        if data_exporter is not None:
-            if args.export_json:
-                data_exporter.save_json(args.export_json)
-            if args.export_csv:
-                data_exporter.save_csv(args.export_csv)
-        cv2.destroyAllWindows()
-        _print("[EXIT] Resources released. Goodbye!")
+        runtime.stop()
 
 
-def main():
-    args = parse_args()
+app = FastAPI(title="Human Motion Capture", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    # Determine source type
-    source_str = args.source
+
+@app.get("/")
+async def index() -> FileResponse:
+    """Serve the Three.js viewer."""
+    return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+@app.get("/api/state")
+async def api_state() -> JSONResponse:
+    """Return backend state and latest pose payload."""
+    return JSONResponse(runtime.state())
+
+
+@app.post("/api/pause")
+async def api_pause(request: PauseRequest) -> JSONResponse:
+    """Pause or resume the capture loop."""
+    return JSONResponse(runtime.set_paused(request.paused))
+
+
+@app.post("/api/source")
+async def api_source(request: SourceRequest) -> JSONResponse:
+    """Switch to a camera index or a server-local video path."""
+    return JSONResponse(runtime.set_source(request.source))
+
+
+@app.post("/api/upload")
+async def api_upload(file: UploadFile = File(...)) -> JSONResponse:
+    """Upload a video file and immediately use it as the input source."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        raise HTTPException(status_code=400, detail="Unsupported video format")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    target = UPLOAD_DIR / f"{int(time.time())}_{Path(file.filename).name}"
+    content = await file.read()
+    target.write_bytes(content)
+    state = runtime.set_source(str(target))
+    return JSONResponse({"uploaded": str(target.relative_to(ROOT_DIR)), "state": state})
+
+
+def mjpeg_generator():
+    """Yield the latest OpenCV overlay as an MJPEG stream."""
+    boundary = b"--frame\r\n"
+    while True:
+        jpeg = runtime.latest_jpeg()
+        yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+        time.sleep(1.0 / 20.0)
+
+
+@app.get("/video_feed")
+async def video_feed() -> StreamingResponse:
+    """Stream the 2D OpenCV overlay to the browser."""
+    return StreamingResponse(
+        mjpeg_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.websocket("/ws/pose")
+@app.websocket("/ws")
+async def websocket_pose(websocket: WebSocket) -> None:
+    """WebSocket endpoint for realtime 3D skeleton data."""
+    await manager.connect(websocket)
+    await websocket.send_text(json.dumps(runtime.latest_payload()))
     try:
-        source = int(source_str)
-    except ValueError:
-        source = source_str
-
-    # Route to appropriate mode
-    if isinstance(source, str) and is_image(source):
-        run_image_mode(args, source)
-    else:
-        run_video_mode(args, source)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await manager.disconnect(websocket)
+    except Exception:
+        await manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)

@@ -16,6 +16,20 @@ REQUIRED_MODULES = [
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn"),
     ("websockets", "websockets"),
+    ("multipart", "python-multipart"),
+]
+
+REQUIRED_PROJECT_FILES = [
+    "main.py",
+    "pose_extractor.py",
+    "gesture_classifier.py",
+    "kinematics.py",
+    "utils.py",
+    "static/index.html",
+    "static/skeleton_renderer.js",
+    "static/humanoid_mesh.js",
+    "static/websocket_client.js",
+    "static/controls.js",
 ]
 
 
@@ -42,12 +56,12 @@ def main() -> int:
             print(f"[FAIL] {package_name}: {exc}")
             ok = False
 
-    static_index = root / "static" / "index.html"
-    if static_index.exists():
-        print("[OK] WebGL viewer: static/index.html")
-    else:
-        print("[FAIL] Missing static/index.html")
-        ok = False
+    for relative_path in REQUIRED_PROJECT_FILES:
+        if (root / relative_path).exists():
+            print(f"[OK] Project file: {relative_path}")
+        else:
+            print(f"[FAIL] Missing project file: {relative_path}")
+            ok = False
 
     print("[CHECK] Result:", "ready" if ok else "needs attention")
     return 0 if ok else 1
