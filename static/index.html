@@ -3,157 +3,344 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Motion Capture - 3D Skeleton Viewer</title>
+    <title>Human Motion Capture</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+
+        * { box-sizing: border-box; }
+        :root {
+            --bg: #111315;
+            --panel: rgba(20, 22, 24, 0.82);
+            --line: rgba(255, 255, 255, 0.13);
+            --text: #f3efe4;
+            --muted: #a4aaa2;
+            --teal: #50d2c2;
+            --coral: #ff8068;
+            --amber: #f4bd4f;
+            --green: #8bd45f;
+        }
         body {
-            background: #0a0a1a;
-            color: #e0e0e0;
-            font-family: 'Inter', 'Segoe UI', sans-serif;
+            margin: 0;
             overflow: hidden;
-            height: 100vh;
+            background: radial-gradient(circle at 30% 10%, #202629 0, #111315 46%, #0b0d0f 100%);
+            color: var(--text);
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: 0;
         }
         #canvas-container {
             width: 100vw;
             height: 100vh;
-            position: relative;
         }
-        /* HUD overlay - top left */
-        #hud {
+        .hud {
             position: absolute;
-            top: 16px;
-            left: 16px;
-            z-index: 10;
+            z-index: 12;
+            color: var(--text);
+            backdrop-filter: blur(14px);
+        }
+        .topbar {
+            top: 14px;
+            left: 14px;
+            right: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
             pointer-events: none;
         }
-        #hud h1 {
-            font-size: 20px;
-            font-weight: 700;
-            color: #00ccff;
-            margin-bottom: 6px;
-            text-shadow: 0 0 12px rgba(0, 204, 255, 0.4);
-            letter-spacing: 0.5px;
-        }
-        #hud .subtitle {
-            font-size: 11px;
-            color: #556;
-            margin-bottom: 10px;
-        }
-        #status {
-            font-size: 12px;
-            padding: 4px 12px;
-            border-radius: 20px;
-            display: inline-block;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        #status.connected {
-            background: rgba(0, 255, 100, 0.12);
-            color: #00ff64;
-            border: 1px solid rgba(0, 255, 100, 0.25);
-            box-shadow: 0 0 8px rgba(0, 255, 100, 0.1);
-        }
-        #status.disconnected {
-            background: rgba(255, 60, 60, 0.12);
-            color: #ff3c3c;
-            border: 1px solid rgba(255, 60, 60, 0.25);
-            animation: pulse 1.5s ease-in-out infinite;
-        }
-        #status.connecting {
-            background: rgba(255, 200, 0, 0.12);
-            color: #ffc800;
-            border: 1px solid rgba(255, 200, 0, 0.25);
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        #fps-counter {
-            font-size: 11px;
-            color: #556;
-            margin-top: 8px;
-        }
-        /* Angles panel - top right */
-        #angles-panel {
-            position: absolute;
-            top: 16px;
-            right: 16px;
-            z-index: 10;
-            background: rgba(10, 10, 30, 0.88);
-            border: 1px solid rgba(0, 204, 255, 0.15);
-            border-radius: 10px;
-            padding: 14px 18px;
+        .brand {
             min-width: 220px;
-            backdrop-filter: blur(12px);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
         }
-        #angles-panel h3 {
+        h1 {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1;
+            font-weight: 700;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+        #status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--coral);
+            box-shadow: 0 0 16px rgba(255, 128, 104, 0.75);
+        }
+        #status-dot.connected {
+            background: var(--green);
+            box-shadow: 0 0 16px rgba(139, 212, 95, 0.75);
+        }
+        #status-dot.connecting {
+            background: var(--amber);
+            box-shadow: 0 0 16px rgba(244, 189, 79, 0.75);
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(74px, auto));
+            gap: 8px;
+            padding: 10px;
+            border: 1px solid var(--line);
+            background: var(--panel);
+            border-radius: 8px;
+            pointer-events: auto;
+        }
+        .stat {
+            min-width: 72px;
+            border-left: 2px solid var(--teal);
+            padding-left: 8px;
+        }
+        .stat span {
+            display: block;
+            color: var(--muted);
             font-size: 11px;
-            color: #00ccff;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            font-weight: 600;
+            line-height: 1.2;
         }
-        .angle-row {
+        .stat strong {
+            display: block;
+            margin-top: 2px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 13px;
+            color: var(--text);
+        }
+        #inspector {
+            top: 92px;
+            right: 14px;
+            width: min(320px, calc(100vw - 28px));
+            max-height: calc(100vh - 178px);
+            overflow: auto;
+            padding: 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+        }
+        #inspector h2 {
+            margin: 0 0 8px;
+            font-size: 12px;
+            color: var(--amber);
+            font-weight: 700;
+        }
+        .row {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            gap: 12px;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
             font-size: 12px;
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
         }
-        .angle-row:last-child { border-bottom: none; }
-        .angle-name {
-            color: #889;
-            font-weight: 400;
+        .row:last-child { border-bottom: 0; }
+        .label {
+            color: var(--muted);
             text-transform: capitalize;
         }
-        .angle-value {
-            color: #00ff96;
-            font-weight: 600;
-            font-variant-numeric: tabular-nums;
-            font-size: 13px;
+        .value {
+            font-family: "IBM Plex Mono", monospace;
+            color: var(--teal);
+            text-align: right;
         }
-        /* Footer */
-        #footer {
-            position: absolute;
+        .toolbar {
+            left: 14px;
             bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            pointer-events: auto;
+        }
+        .source-box {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-right: 1px solid var(--line);
+            padding-right: 8px;
+        }
+        #camera-input {
+            width: 176px;
+            height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            font-family: "IBM Plex Mono", monospace;
+            padding: 0 8px;
+        }
+        button {
+            display: grid;
+            place-items: center;
+            width: 36px;
+            height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            cursor: pointer;
+        }
+        button:hover,
+        button.active {
+            border-color: var(--teal);
+            color: var(--teal);
+            background: rgba(80, 210, 194, 0.1);
+        }
+        button svg {
+            width: 18px;
+            height: 18px;
+            stroke-width: 2.2;
+        }
+        #aspect-button {
+            width: 52px;
+            min-width: 52px;
+            padding: 0 8px;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+            color: var(--text);
+        }
+        #aspect-button.active {
+            color: var(--teal);
+        }
+        #video-overlay {
+            position: absolute;
+            left: 14px;
+            top: 92px;
+            z-index: 11;
+            width: min(520px, calc(100vw - 28px));
+            max-height: calc(100vh - 178px);
+            aspect-ratio: var(--video-aspect, 16 / 9);
+            object-fit: contain;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: #08090a;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+        }
+        #video-overlay.fit-cover {
+            object-fit: cover;
+        }
+        body.portrait-mode #video-overlay {
+            height: min(78vh, calc(100vh - 178px));
+            width: auto;
+            max-width: min(48vw, 520px);
+        }
+        body.landscape-mode #video-overlay {
+            width: min(28vw, 340px);
+            max-height: 192px;
+            height: auto;
+        }
+        .hidden { display: none !important; }
+        #toast {
+            position: absolute;
+            z-index: 20;
             left: 50%;
+            bottom: 72px;
             transform: translateX(-50%);
-            font-size: 11px;
-            color: #334;
-            z-index: 10;
-            background: rgba(10, 10, 30, 0.6);
-            padding: 6px 16px;
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 8px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            font-size: 12px;
+            opacity: 0;
+            transition: opacity 160ms ease;
+            pointer-events: none;
+        }
+        #toast.show { opacity: 1; }
+        @media (max-width: 820px) {
+            .topbar {
+                align-items: flex-start;
+            }
+            .stats {
+                grid-template-columns: repeat(2, minmax(72px, 1fr));
+            }
+            #inspector {
+                top: auto;
+                right: 10px;
+                bottom: 66px;
+                max-height: 34vh;
+            }
+            #video-overlay {
+                top: 142px;
+                left: 10px;
+                width: min(310px, calc(100vw - 20px));
+                max-height: 45vh;
+            }
+            body.portrait-mode #video-overlay,
+            body.landscape-mode #video-overlay {
+                width: min(310px, calc(100vw - 20px));
+                height: auto;
+                max-width: calc(100vw - 20px);
+            }
+            .toolbar {
+                left: 10px;
+                right: 10px;
+                overflow-x: auto;
+            }
         }
     </style>
 </head>
 <body>
-    <div id="canvas-container">
-        <!-- HUD -->
-        <div id="hud">
-            <h1>3D Skeleton Viewer</h1>
-            <div class="subtitle">Human Motion Capture</div>
-            <div id="status" class="disconnected">&#x25CF; Disconnected</div>
-            <div id="fps-counter">FPS: --</div>
-        </div>
+    <main id="canvas-container"></main>
 
-        <!-- Angles panel -->
-        <div id="angles-panel">
-            <h3>Joint Angles</h3>
-            <div id="angles-list">
-                <div class="angle-row"><span class="angle-name">Waiting for data...</span></div>
+    <section class="hud topbar">
+        <div class="brand">
+            <h1>Human Motion Capture</h1>
+            <div class="status">
+                <span id="status-dot"></span>
+                <span id="status-text">Disconnected</span>
             </div>
         </div>
+        <div class="stats">
+            <div class="stat"><span>Stream FPS</span><strong id="stream-fps">--</strong></div>
+            <div class="stat"><span>Backend FPS</span><strong id="backend-fps">--</strong></div>
+            <div class="stat"><span>Gesture</span><strong id="gesture-label">--</strong></div>
+            <div class="stat"><span>Confidence</span><strong id="gesture-confidence">--</strong></div>
+        </div>
+    </section>
 
-        <div id="footer">Mouse: rotate &nbsp;|&nbsp; Scroll: zoom &nbsp;|&nbsp; Right-click: pan</div>
-    </div>
+    <img id="video-overlay" src="/video_feed" alt="OpenCV skeleton overlay">
 
-    <!-- Three.js from CDN (ES module) -->
+    <aside id="inspector" class="hud">
+        <h2>Joint Angles</h2>
+        <div id="angles-list">
+            <div class="row"><span class="label">waiting</span><span class="value">--</span></div>
+        </div>
+        <h2 style="margin-top: 14px;">Kinematics</h2>
+        <div id="metadata-list">
+            <div class="row"><span class="label">fk chains</span><span class="value">0</span></div>
+            <div class="row"><span class="label">ik solver</span><span class="value">FABRIK</span></div>
+        </div>
+    </aside>
+
+    <nav class="hud toolbar">
+        <div class="source-box">
+            <input id="camera-input" type="text" value="0" placeholder="0 or http://phone:8080/video" title="Camera index or IP camera URL">
+            <button id="scan-cameras-button" title="Scan cameras"><i data-lucide="search"></i></button>
+            <button id="source-button" title="Use source"><i data-lucide="webcam"></i></button>
+            <button id="upload-button" title="Upload video"><i data-lucide="upload"></i></button>
+            <input id="upload-input" class="hidden" type="file" accept="video/*">
+        </div>
+        <button id="pause-button" title="Pause or resume"><i data-lucide="pause"></i></button>
+        <button class="active" data-toggle="video" title="2D overlay"><i data-lucide="picture-in-picture-2"></i></button>
+        <button id="aspect-button" title="Camera aspect">9:16</button>
+        <button id="fit-button" title="Fit or fill camera frame"><i data-lucide="scan"></i></button>
+        <button id="rotate-button" title="Rotate camera"><i data-lucide="rotate-cw"></i></button>
+        <button class="active" data-toggle="skeleton" title="3D skeleton"><i data-lucide="git-branch"></i></button>
+        <button class="active" data-toggle="humanoid" title="Humanoid mesh"><i data-lucide="person-standing"></i></button>
+        <button data-toggle="ik" title="IK overlay"><i data-lucide="route"></i></button>
+        <button class="active" data-toggle="grid" title="Grid"><i data-lucide="grid-3x3"></i></button>
+        <button class="active" data-toggle="center" title="Hip center"><i data-lucide="crosshair"></i></button>
+        <button id="reset-camera" title="Reset camera"><i data-lucide="rotate-ccw"></i></button>
+    </nav>
+
+    <div id="toast"></div>
+
     <script type="importmap">
     {
         "imports": {
@@ -162,322 +349,99 @@
         }
     }
     </script>
-
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
     <script type="module">
-    import * as THREE from 'three';
-    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { SkeletonRenderer } from '/static/skeleton_renderer.js';
+        import { PoseWebSocket } from '/static/websocket_client.js';
+        import { initControls } from '/static/controls.js';
 
-    // =================================================================
-    // Scene Setup
-    // =================================================================
-    const container = document.getElementById('canvas-container');
+        const renderer = new SkeletonRenderer(document.getElementById('canvas-container'));
+        const toast = document.getElementById('toast');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a1a);
-    scene.fog = new THREE.FogExp2(0x0a0a1a, 0.3);
-
-    const camera = new THREE.PerspectiveCamera(
-        50, window.innerWidth / window.innerHeight, 0.01, 100
-    );
-    camera.position.set(0, 0.2, 2.0);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    container.appendChild(renderer.domElement);
-
-    // OrbitControls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
-    controls.target.set(0, 0, 0);
-    controls.minDistance = 0.5;
-    controls.maxDistance = 10;
-
-    // Lights
-    scene.add(new THREE.AmbientLight(0x303050, 2.0));
-
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
-    dirLight.position.set(3, 5, 4);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-
-    const rimLight = new THREE.DirectionalLight(0x00ccff, 0.4);
-    rimLight.position.set(-2, 1, -3);
-    scene.add(rimLight);
-
-    const pointLight = new THREE.PointLight(0x00ccff, 0.6, 8);
-    pointLight.position.set(-1, 1.5, 2);
-    scene.add(pointLight);
-
-    // Ground plane with grid
-    const groundGeo = new THREE.PlaneGeometry(6, 6);
-    const groundMat = new THREE.MeshStandardMaterial({
-        color: 0x0a0a1a,
-        roughness: 0.9,
-        metalness: 0.0,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -1;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    const grid = new THREE.GridHelper(6, 30, 0x1a1a3e, 0x0f0f28);
-    grid.position.y = -0.999;
-    scene.add(grid);
-
-    // =================================================================
-    // Skeleton Configuration
-    // =================================================================
-    const SEGMENT_GROUPS = {
-        torso:     { pairs: [[11,12],[11,23],[12,24],[23,24]], color: 0xdddddd },
-        left_arm:  { pairs: [[11,13],[13,15]],                color: 0x00bbff },
-        right_arm: { pairs: [[12,14],[14,16]],                color: 0x00bbff },
-        left_leg:  { pairs: [[23,25],[25,27],[27,29],[27,31]], color: 0xff4466 },
-        right_leg: { pairs: [[24,26],[26,28],[28,30],[28,32]], color: 0xff4466 },
-        face:      { pairs: [[0,11],[0,12]],                  color: 0x666688 },
-    };
-
-    const KEY_JOINTS = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
-
-    // =================================================================
-    // Skeleton 3D Objects - Spheres for joints, cylinders for bones
-    // =================================================================
-    const jointGroup = new THREE.Group();
-    scene.add(jointGroup);
-    const boneGroup = new THREE.Group();
-    scene.add(boneGroup);
-
-    // Joint spheres
-    const jointMeshes = [];
-    const jointGeo = new THREE.SphereGeometry(0.018, 16, 16);
-    const jointMat = new THREE.MeshPhongMaterial({
-        color: 0xffcc00,
-        emissive: 0x664400,
-        shininess: 100,
-        specular: 0xffffff,
-    });
-
-    for (let i = 0; i < KEY_JOINTS.length; i++) {
-        const mesh = new THREE.Mesh(jointGeo, jointMat);
-        mesh.visible = false;
-        mesh.castShadow = true;
-        jointGroup.add(mesh);
-        jointMeshes.push(mesh);
-    }
-
-    // Bone cylinders (dynamically positioned between joints)
-    const boneCylinders = [];
-    const cylGeo = new THREE.CylinderGeometry(0.006, 0.006, 1, 8);
-    // Shift geometry so bottom is at origin (makes positioning easier)
-    cylGeo.translate(0, 0.5, 0);
-
-    for (const [groupName, group] of Object.entries(SEGMENT_GROUPS)) {
-        for (const [i1, i2] of group.pairs) {
-            const mat = new THREE.MeshPhongMaterial({
-                color: group.color,
-                emissive: new THREE.Color(group.color).multiplyScalar(0.15),
-                shininess: 60,
-            });
-            const cyl = new THREE.Mesh(cylGeo.clone(), mat);
-            cyl.visible = false;
-            cyl.castShadow = true;
-            cyl.userData = { i1, i2 };
-            boneGroup.add(cyl);
-            boneCylinders.push(cyl);
-        }
-    }
-
-    // =================================================================
-    // Coordinate transform: MediaPipe -> Three.js
-    // MediaPipe: X=right, Y=down, Z=away
-    // Three.js:  X=right, Y=up,   Z=toward
-    // =================================================================
-    function transformLM(lm) {
-        return new THREE.Vector3(lm[0], -lm[1], -lm[2]);
-    }
-
-    // Temp vectors to avoid GC pressure
-    const _v1 = new THREE.Vector3();
-    const _v2 = new THREE.Vector3();
-    const _dir = new THREE.Vector3();
-    const _up = new THREE.Vector3(0, 1, 0);
-    const _quat = new THREE.Quaternion();
-
-    // =================================================================
-    // Update skeleton from data
-    // =================================================================
-    function updateSkeleton(data) {
-        if (!data.landmarks) {
-            jointMeshes.forEach(m => m.visible = false);
-            boneCylinders.forEach(m => m.visible = false);
-            return;
+        function showToast(text) {
+            toast.textContent = text;
+            toast.classList.add('show');
+            clearTimeout(showToast.timer);
+            showToast.timer = setTimeout(() => toast.classList.remove('show'), 1600);
         }
 
-        const lms = data.landmarks.map(transformLM);
+        function setStatus({ state, text }) {
+            statusDot.className = state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : '';
+            statusText.textContent = text;
+        }
 
-        // Update joints
-        for (let i = 0; i < KEY_JOINTS.length; i++) {
-            const idx = KEY_JOINTS[i];
-            if (idx < lms.length) {
-                jointMeshes[i].position.copy(lms[idx]);
-                jointMeshes[i].visible = true;
+        function updateHud(payload) {
+            renderer.update(payload);
+            const gesture = payload.gesture || {};
+            const metadata = payload.metadata || {};
+            document.getElementById('backend-fps').textContent =
+                metadata.fps ? metadata.fps.toFixed(1) : '--';
+            document.getElementById('gesture-label').textContent = gesture.label || '--';
+            document.getElementById('gesture-confidence').textContent =
+                Number.isFinite(gesture.confidence) ? gesture.confidence.toFixed(2) : '--';
+            updateVideoAspect(metadata);
+            updateAngles(payload.angles || {});
+            updateMetadata(payload);
+        }
+
+        function updateVideoAspect(metadata) {
+            const width = metadata.frame_width;
+            const height = metadata.frame_height;
+            if (!Number.isFinite(width) || !Number.isFinite(height) || height <= 0) return;
+            document.getElementById('video-overlay')
+                .style.setProperty('--video-aspect', `${width} / ${height}`);
+            document.body.classList.toggle('portrait-mode', width < height);
+            document.body.classList.toggle('landscape-mode', width >= height);
+        }
+
+        function updateAngles(angles) {
+            const list = document.getElementById('angles-list');
+            const keys = Object.keys(angles).sort();
+            if (!keys.length) {
+                list.innerHTML = '<div class="row"><span class="label">no angles</span><span class="value">--</span></div>';
+                return;
             }
+            list.innerHTML = keys.map((key) => {
+                const label = key.replaceAll('_', ' ').toLowerCase();
+                return `<div class="row"><span class="label">${label}</span><span class="value">${angles[key].toFixed(1)} deg</span></div>`;
+            }).join('');
         }
 
-        // Update bone cylinders
-        for (const cyl of boneCylinders) {
-            const { i1, i2 } = cyl.userData;
-            if (i1 < lms.length && i2 < lms.length) {
-                _v1.copy(lms[i1]);
-                _v2.copy(lms[i2]);
-                _dir.subVectors(_v2, _v1);
-                const len = _dir.length();
-
-                if (len > 0.001) {
-                    cyl.position.copy(_v1);
-                    cyl.scale.set(1, len, 1);
-                    _dir.normalize();
-                    _quat.setFromUnitVectors(_up, _dir);
-                    cyl.quaternion.copy(_quat);
-                    cyl.visible = true;
-                } else {
-                    cyl.visible = false;
-                }
-            }
+        function updateMetadata(payload) {
+            const metadata = payload.metadata || {};
+            const fkCount = metadata.fk ? Object.keys(metadata.fk).length : 0;
+            const boneCount = metadata.bone_lengths ? Object.keys(metadata.bone_lengths).length : 0;
+            const ikError = metadata.ik_demo?.left_arm?.end_error;
+            document.getElementById('metadata-list').innerHTML = `
+                <div class="row"><span class="label">fk chains</span><span class="value">${fkCount}</span></div>
+                <div class="row"><span class="label">bones</span><span class="value">${boneCount}</span></div>
+                <div class="row"><span class="label">ik solver</span><span class="value">FABRIK</span></div>
+                <div class="row"><span class="label">left ik error</span><span class="value">${Number.isFinite(ikError) ? ikError.toFixed(4) : '--'}</span></div>
+                <div class="row"><span class="label">source</span><span class="value">${metadata.source || '--'}</span></div>
+                <div class="row"><span class="label">backend</span><span class="value">${metadata.source_backend || '--'}</span></div>
+                <div class="row"><span class="label">camera mode</span><span class="value">${metadata.camera_aspect || '--'} / ${metadata.camera_fit || '--'} / ${metadata.camera_rotate ?? '--'} deg</span></div>
+                <div class="row"><span class="label">latency mode</span><span class="value">${metadata.latency_mode || '--'}</span></div>
+                <div class="row"><span class="label">frame size</span><span class="value">${metadata.frame_width || '--'} x ${metadata.frame_height || '--'}</span></div>
+                <div class="row"><span class="label">frame mean</span><span class="value">${Number.isFinite(metadata.frame_mean) ? metadata.frame_mean.toFixed(1) : '--'}</span></div>
+                <div class="row"><span class="label">frame std</span><span class="value">${Number.isFinite(metadata.frame_std) ? metadata.frame_std.toFixed(1) : '--'}</span></div>
+            `;
         }
 
-        // Update angles panel
-        if (data.angles) {
-            updateAnglesPanel(data.angles);
-        }
-    }
+        const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/pose`;
+        const client = new PoseWebSocket({
+            url: wsUrl,
+            onStatus: setStatus,
+            onMessage: updateHud,
+            onFps: (fps) => {
+                document.getElementById('stream-fps').textContent = String(fps);
+            },
+        });
 
-    // =================================================================
-    // Angles Panel
-    // =================================================================
-    function updateAnglesPanel(angles) {
-        const list = document.getElementById('angles-list');
-        if (!angles || Object.keys(angles).length === 0) {
-            list.innerHTML = '<div class="angle-row"><span class="angle-name">No angles</span></div>';
-            return;
-        }
-        let html = '';
-        for (const key of Object.keys(angles).sort()) {
-            const val = angles[key].toFixed(1);
-            const label = key.replace(/_/g, ' ').toLowerCase();
-            html += `<div class="angle-row">
-                <span class="angle-name">${label}</span>
-                <span class="angle-value">${val}&deg;</span>
-            </div>`;
-        }
-        list.innerHTML = html;
-    }
-
-    // =================================================================
-    // WebSocket with auto-reconnect
-    // =================================================================
-    const WS_URL = `ws://${window.location.host}/ws`;
-    let ws = null;
-    let reconnectTimer = null;
-
-    // FPS tracking
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
-    let displayFps = 0;
-
-    function setStatus(state, text) {
-        const el = document.getElementById('status');
-        el.className = state;
-        el.textContent = text;
-    }
-
-    function connectWebSocket() {
-        setStatus('connecting', '\u25CF Connecting...');
-
-        try {
-            ws = new WebSocket(WS_URL);
-        } catch (e) {
-            scheduleReconnect();
-            return;
-        }
-
-        ws.onopen = () => {
-            setStatus('connected', '\u25CF Connected');
-            frameCount = 0;
-            lastFpsTime = performance.now();
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                updateSkeleton(data);
-                frameCount++;
-
-                // Update FPS display every second
-                const now = performance.now();
-                if (now - lastFpsTime >= 1000) {
-                    displayFps = Math.round(frameCount * 1000 / (now - lastFpsTime));
-                    document.getElementById('fps-counter').textContent = `FPS: ${displayFps}`;
-                    frameCount = 0;
-                    lastFpsTime = now;
-                }
-            } catch (e) {
-                console.error('Parse error:', e);
-            }
-        };
-
-        ws.onclose = () => {
-            setStatus('disconnected', '\u25CF Disconnected');
-            document.getElementById('fps-counter').textContent = 'FPS: --';
-            scheduleReconnect();
-        };
-
-        ws.onerror = () => {
-            ws.close();
-        };
-    }
-
-    function scheduleReconnect() {
-        if (reconnectTimer) return;
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWebSocket();
-        }, 2000);
-    }
-
-    // =================================================================
-    // Render loop
-    // =================================================================
-    function animate() {
-        requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
-    }
-
-    // =================================================================
-    // Resize
-    // =================================================================
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    // =================================================================
-    // Start
-    // =================================================================
-    animate();
-    connectWebSocket();
+        initControls(renderer, { onControl: showToast });
+        window.lucide?.createIcons();
+        client.connect();
     </script>
 </body>
 </html>
